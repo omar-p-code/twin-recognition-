@@ -1,0 +1,9 @@
+torch
+torchvision
+torchaudio
+torchmetrics
+pillow
+numpy
+tqdm
+matplotlib
+kivy
