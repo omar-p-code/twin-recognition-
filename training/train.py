@@ -82,7 +82,7 @@ def train():
    )
 
    # ================== Checkpoint setup ==================
-   checkpoint_path = os.path.join(CHECKPOINT_DIR, "siamese_last.pth")
+   checkpoint_path = os.path.join(CHECKPOINT_DIR, "siamese_best.pth")
 
    start_epoch = 0
    best_loss = float("inf")
