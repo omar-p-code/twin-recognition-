@@ -45,10 +45,28 @@ def train():
       model.parameters(),
       lr=LEARNING_RATE
    )
-
+   
+   checkpoint_path = os.path.join(CHECKPOINT_DIR, "siamese_best.pth")
+   start_epoch = 0
    best_loss = float("inf")
 
-   for epoch in range(NUM_EPOCHS):
+   if os.path.exists(checkpoint_path):
+      print("Loading checkpoint...")
+
+      checkpoint = torch.load(checkpoint_path, map_location=DEVICE)
+
+      model.load_state_dict(checkpoint["model_state_dict"])
+      optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
+
+      start_epoch = checkpoint["epoch"] + 1
+      best_loss = checkpoint.get("best_loss", float("inf"))
+
+      print(f"Resuming from epoch {start_epoch}")
+
+   best_loss = float("inf")
+   NUM_EPOCHS = start_epoch + 20
+
+   for epoch in range(start_epoch, NUM_EPOCHS):
       model.train()
       running_loss = 0.0
 
@@ -92,14 +110,16 @@ def train():
             f"Loss: {epoch_loss:.4f}"
       )
 
-      if epoch_loss < best_loss:
-            best_loss = epoch_loss
+   if epoch_loss < best_loss:
+      best_loss = epoch_loss
 
-            torch.save(
-               model.state_dict(),
-               f"{CHECKPOINT_DIR}/siamese_best.pth"
-            )
+      torch.save({
+         "epoch": epoch,
+         "model_state_dict": model.state_dict(),
+         "optimizer_state_dict": optimizer.state_dict(),
+         "best_loss": epoch_loss
+      }, os.path.join(CHECKPOINT_DIR, "siamese.best.pth"))
 
-            print("→ Best model saved successfully!")
+      print("→ Best model saved successfully!")
 
    print("Training completed.")

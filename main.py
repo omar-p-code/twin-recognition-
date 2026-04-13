@@ -7,7 +7,7 @@ if __name__ == "__main__":
    print("Starting the Twin Recognition project...")
    
    # Run training
-   train()
+   # train()
    
    # After training, you can test inference like this:
    model = load_model("checkpoints/siamese_best.pth")
