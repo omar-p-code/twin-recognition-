@@ -2,14 +2,14 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import torchvision.models as models
-import torchvision.transforms as transforms
 from PIL import Image
+import numpy as np
 from config import IMG_SIZE
 
 
 class SiameseNetwork(nn.Module):
    def __init__(self):
-      super(SiameseNetwork, self).__init__()
+      super().__init__()
 
       base_model = models.resnet18(
             weights=models.ResNet18_Weights.DEFAULT
@@ -20,10 +20,9 @@ class SiameseNetwork(nn.Module):
       )
 
       self.fc = nn.Sequential(
-            nn.Linear(512, 256),
+            nn.Linear(512, 128),
             nn.ReLU(inplace=True),
-            nn.Dropout(0.4),
-            nn.Linear(256, 128)
+            nn.Linear(128, 64)
       )
 
    def forward_once(self, x):
@@ -31,71 +30,66 @@ class SiameseNetwork(nn.Module):
       x = x.view(x.size(0), -1)
       x = self.fc(x)
 
-      # Normalize the output to unit length
+      # normalize embeddings
       x = F.normalize(x, p=2, dim=1)
-
       return x
 
-   def forward(self, anchor, positive, negative):
-      anchor_emb = self.forward_once(anchor)
-      positive_emb = self.forward_once(positive)
-      negative_emb = self.forward_once(negative)
-
-      return anchor_emb, positive_emb, negative_emb
+   def forward(self, x1, x2):
+      out1 = self.forward_once(x1)
+      out2 = self.forward_once(x2)
+      return out1, out2
 
 
-class TripletLoss(nn.Module):
-   def __init__(self, margin=1.5):
+class ContrastiveLoss(nn.Module):
+   def __init__(self, margin=1.0):
       super().__init__()
-      self.loss_fn = nn.TripletMarginLoss(
-            margin=margin,
-            p=2
+      self.margin = margin
+
+   def forward(self, out1, out2, label):
+      distance = F.pairwise_distance(out1, out2)
+
+      loss = torch.mean(
+            label * torch.pow(distance, 2) +
+            (1 - label) * torch.pow(
+               torch.clamp(self.margin - distance, min=0.0), 2
+            )
       )
-
-   def forward(self, anchor, positive, negative):
-      return self.loss_fn(anchor, positive, negative)
+      return loss
 
 
-def compare_faces(
-   model,
-   img1_path,
-   img2_path,
-   device,
-   threshold_same=0.5,
-   threshold_twin=1.0
-):
+# 🔥 Mobile-friendly preprocessing
+def preprocess_image(path):
+   img = Image.open(path).convert("RGB")
+   img = img.resize((IMG_SIZE, IMG_SIZE))
+
+   img = np.array(img).astype("float32") / 255.0
+
+   mean = np.array([0.485, 0.456, 0.406])
+   std = np.array([0.229, 0.224, 0.225])
+
+   img = (img - mean) / std
+   img = np.transpose(img, (2, 0, 1))
+   img = np.expand_dims(img, axis=0)
+
+   return torch.tensor(img, dtype=torch.float32)
+
+
+def compare_faces(model, img1, img2, device, th_same, th_twin):
    model.eval()
 
-   transform = transforms.Compose([
-      transforms.Resize((IMG_SIZE, IMG_SIZE)),
-      transforms.ToTensor(),
-      transforms.Normalize(
-            mean=[0.485, 0.456, 0.406],
-            std=[0.229, 0.224, 0.225]
-      )
-   ])
-
-   img1 = transform(
-      Image.open(img1_path).convert("RGB")
-   ).unsqueeze(0).to(device)
-
-   img2 = transform(
-      Image.open(img2_path).convert("RGB")
-   ).unsqueeze(0).to(device)
+   img1 = preprocess_image(img1).to(device)
+   img2 = preprocess_image(img2).to(device)
 
    with torch.no_grad():
-      out1 = model.forward_once(img1)
-      out2 = model.forward_once(img2)
+      e1 = model.forward_once(img1)
+      e2 = model.forward_once(img2)
 
-      distance = torch.nn.functional.pairwise_distance(
-            out1,
-            out2
-      ).item()
+      distance = F.pairwise_distance(e1, e2).item()
 
-      if distance < threshold_same:
+      if distance < th_same:
             result = "Same Person"
-      elif distance < threshold_twin:
-            result = "Possible Twin"
+      elif distance < th_twin:
+            result = "Twin"
       else:
             result = "Different People"
 

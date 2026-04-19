@@ -1,21 +1,25 @@
 import torch
-from models.siamese import SiameseNetwork, compare_faces
-from config import DEVICE, THRESHOLD
+from models.siamese import SiameseNetwork
 
-def load_model(checkpoint_path):
-   model = SiameseNetwork().to(DEVICE)
-   model.load_state_dict(torch.load(checkpoint_path, map_location=DEVICE))
+
+def load_model(path, device):
+   model = SiameseNetwork().to(device)
+
+   checkpoint = torch.load(path, map_location=device)
+
+   if isinstance(checkpoint, dict) and "model_state_dict" in checkpoint:
+      state_dict = checkpoint["model_state_dict"]
+
+   elif isinstance(checkpoint, dict):
+      state_dict = checkpoint
+
+   else:
+      raise ValueError("Invalid checkpoint format")
+
+   model.load_state_dict(state_dict, strict=False)
    model.eval()
-   return model
 
-# Example usage
-if __name__ == "__main__":
-   model = load_model("checkpoints/siamese_best.pth")
-   
-   img1_path = "data/test/personA.jpg"
-   img2_path = "data/test/personB.jpg"
-   
-   distance, val = compare_faces(model, img1_path, img2_path, device=DEVICE, threshold_same=THRESHOLD)
-   
-   print(f"Distance: {distance:.4f}")
-   print(f"Same person (twin)? → {val}")
+   th_same = checkpoint.get("threshold_same", 0.4)
+   th_twin = checkpoint.get("threshold_twin", 0.7)
+
+   return model, th_same, th_twin

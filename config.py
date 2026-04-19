@@ -12,12 +12,12 @@ CHECKPOINT_DIR = os.path.join(BASE_DIR, "checkpoints")
 os.makedirs(CHECKPOINT_DIR, exist_ok=True)
 
 # ================== Hyperparameters ==================
-IMG_SIZE = 224
+IMG_SIZE = 128
 BATCH_SIZE = 32
 NUM_EPOCHS = 20
 LEARNING_RATE = 0.0001
 MARGIN = 2.0
-THRESHOLD = 0.4
+THRESHOLD = 0.5
 
 # ================== Device ==================
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
