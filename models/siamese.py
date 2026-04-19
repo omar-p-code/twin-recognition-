@@ -57,7 +57,7 @@ class ContrastiveLoss(nn.Module):
       return loss
 
 
-# 🔥 Mobile-friendly preprocessing
+# Mobile-friendly preprocessing
 def preprocess_image(path):
    img = Image.open(path).convert("RGB")
    img = img.resize((IMG_SIZE, IMG_SIZE))
@@ -74,7 +74,7 @@ def preprocess_image(path):
    return torch.tensor(img, dtype=torch.float32)
 
 
-def compare_faces(model, img1, img2, device, th_same, th_twin):
+def compare_faces(model, img1, img2, th_same, th_twin, device="cpu"):
    model.eval()
 
    img1 = preprocess_image(img1).to(device)
@@ -86,6 +86,7 @@ def compare_faces(model, img1, img2, device, th_same, th_twin):
 
       distance = F.pairwise_distance(e1, e2).item()
 
+      print(f"thresholds: same < {th_same} < twin < {th_twin} < different")
       if distance < th_same:
             result = "Same Person"
       elif distance < th_twin:
