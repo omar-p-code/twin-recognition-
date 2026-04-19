@@ -1,3 +1,4 @@
 kivy_env/
 __pycashe__/
 *.pyc
+venv/
