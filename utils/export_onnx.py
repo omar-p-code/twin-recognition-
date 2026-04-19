@@ -1,27 +1,18 @@
 import torch
-from models.siamese import SiameseNetwork
+from config import DEVICE, IMG_SIZE
 
-DEVICE = "cpu"
+def export_onnx(model, path="siamese.onnx"):
+   model.eval()
 
-model = SiameseNetwork().to(DEVICE)
+   dummy_input = torch.randn(1, 3, IMG_SIZE, IMG_SIZE).to(DEVICE)
 
-checkpoint = torch.load(
-   "checkpoints/siamese_best.pth",
-   map_location=DEVICE
-)
+   torch.onnx.export(
+      model.forward_once,   # important
+      dummy_input,
+      path,
+      input_names=["input"],
+      output_names=["embedding"],
+      opset_version=11
+   )
 
-model.load_state_dict(checkpoint["model_state_dict"], strict=False)
-model.eval()
-
-dummy = torch.randn(1, 3, 224, 224)
-
-torch.onnx.export(
-   model.forward_once,
-   dummy,
-   "siamese.onnx",
-   input_names=["input"],
-   output_names=["embedding"],
-   opset_version=11
-)
-
-print("ONNX exported successfully")
+   print("ONNX exported successfully!")
