@@ -4,7 +4,7 @@ from models.siamese import compare_faces
 from training.train import train
 
 
-train()  # Train the model before running inference
+# train()  # Train the model before running inference
 
 
 
@@ -12,7 +12,7 @@ if __name__ == "__main__":
    print("Starting the Twin Recognition project...")
    
    # Load model
-   checkpoint_path = "checkpoints/siamese_best.pth"
+   checkpoint_path = "checkpoints/checkpoint.pth"
    
    # Check if model exists
    import os
@@ -28,7 +28,7 @@ if __name__ == "__main__":
    
    # Image paths
    img1_path = "data/val/Abdullah_Gul/Abdullah_Gul_0007.jpg"
-   img2_path = "data/val/Alejandro_Toledo/Alejandro_Toledo_0005.jpg"
+   img2_path = "data/val/Andy_Roddick/Andy_Roddick_0001.jpg"
    
    # Fix: Remove extra .jpg extension if present
    if img1_path.endswith('.jpg.jpg'):
@@ -74,6 +74,7 @@ if __name__ == "__main__":
             print(f"  Face 2: {detection_info.get('face2_message', 'Unknown error')}")
    else:
       print(f"\n{'='*40}")
+      print(f"Thresholds: same={th_same}, twin={th_twin}")
       print(f"📊 RESULT:")
       print(f"  Distance: {distance:.4f}")
       print(f"  Result: {result}")
