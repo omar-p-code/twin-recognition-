@@ -13,7 +13,7 @@ os.makedirs(CHECKPOINT_DIR, exist_ok=True)
 # ================== Hyperparameters ==================
 IMG_SIZE = 128
 BATCH_SIZE = 32
-NUM_EPOCHS = 20
+NUM_EPOCHS = 40
 LEARNING_RATE = 0.0001
 MARGIN = 2.0
 THRESHOLD = 0.5

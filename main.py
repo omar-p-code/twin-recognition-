@@ -4,7 +4,7 @@ from models.siamese import compare_faces
 from training.train import train
 
 
-# train()  # Train the model before running inference
+train()  # Train the model before running inference
 
 
 
