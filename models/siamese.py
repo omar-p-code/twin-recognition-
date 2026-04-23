@@ -1,4 +1,4 @@
-# models/siamese.py - Fixed working version
+# models/siamese.py - Complete version with ContrastiveLoss
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -47,6 +47,38 @@ class SiameseNetwork(nn.Module):
       out2 = self.forward_once(x2)
       return out1, out2
 
+
+# ================== CONTRASTIVE LOSS ==================
+class ContrastiveLoss(nn.Module):
+   """
+   Contrastive Loss for Siamese Networks
+   
+   Formula:
+      Loss = (label) * distance^2 + (1-label) * max(margin - distance, 0)^2
+   
+   Where:
+      - label = 1 for same person, 0 for different people
+      - distance = Euclidean distance between embeddings
+      - margin = minimum distance for different people
+   """
+   def __init__(self, margin=2.0):
+      super(ContrastiveLoss, self).__init__()
+      self.margin = margin
+   
+   def forward(self, output1, output2, label):
+      # Calculate Euclidean distance
+      euclidean_distance = F.pairwise_distance(output1, output2)
+      
+      # Contrastive loss
+      loss_contrastive = torch.mean(
+            (1 - label) * torch.pow(euclidean_distance, 2) +
+            (label) * torch.pow(torch.clamp(self.margin - euclidean_distance, min=0.0), 2)
+      )
+      
+      return loss_contrastive
+
+
+# ================== DATA PREPROCESSING ==================
 def preprocess_image(image_input):
    """
    Preprocess image from path or PIL Image
@@ -72,6 +104,8 @@ def preprocess_image(image_input):
       print(f"Preprocessing error: {e}")
       raise
 
+
+# ================== FACE COMPARISON FUNCTIONS ==================
 def compare_faces(model, img1, img2, th_same, th_twin, device="cpu", detect_faces=True):
    """
    Compare two faces
@@ -141,6 +175,7 @@ def compare_faces(model, img1, img2, th_same, th_twin, device="cpu", detect_face
    except Exception as e:
       print(f"Comparison error: {e}")
       return 0.5, "Comparison Failed", detection_info
+
 
 def compare_faces_with_validation(model, img1, img2, th_same, th_twin, device="cpu"):
    """

@@ -8,7 +8,7 @@ import numpy as np
 from models.siamese import SiameseNetwork, ContrastiveLoss
 from utils.dataset import PairDataset
 from config import *
-from utils import onnx_export
+from utils.export_onnx import export_onnx
 
 def calibrate_thresholds(model, loader, device):
 

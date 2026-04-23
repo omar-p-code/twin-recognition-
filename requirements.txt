@@ -8,3 +8,4 @@ tqdm
 matplotlib
 kivy
 onnxruntime
+opencv-python
