@@ -1,4 +1,3 @@
-# training/train.py
 
 import torch
 from torch.utils.data import DataLoader
@@ -151,7 +150,8 @@ def train():
    criterion = ContrastiveLoss(margin=MARGIN)
    optimizer = torch.optim.Adam(model.parameters(), lr=LEARNING_RATE)
 
-   start_epoch, total_epochs, best_loss, th_same, th_twin = load_checkpoint(model, optimizer)
+   start_epoch, best_loss, th_same, th_twin = load_checkpoint(model, optimizer)
+   total_epochs = start_epoch + 20;
 
    print(f"\nTraining from {start_epoch} to {total_epochs}\n")
 
