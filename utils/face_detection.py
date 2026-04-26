@@ -1,85 +1,103 @@
-# utils/face_detection.py - Fixed version
+# ui/face_detector.py - Lightweight face detection using OpenCV
 import cv2
 import numpy as np
-from PIL import Image
+from PIL import Image as PILImage
 import os
 
-# Simple face detector that always works
 class FaceDetector:
-    def __init__(self):
-        self.has_mtcnn = False
-        self.detector = None
-        
-        # Try to load MTCNN if available
-        try:
-            from mtcnn import MTCNN
-            self.detector = MTCNN()
-            self.has_mtcnn = True
-            print("✓ MTCNN face detector loaded")
-        except ImportError:
-            print("! MTCNN not available, using simple fallback")
+    """Lightweight face detector using OpenCV - no TensorFlow needed"""
     
-    def detect_and_crop_face(self, image_path, add_padding=20):
-        """
-        Detect face in image and return cropped face
-        Returns: (PIL Image of cropped face, message)
-        """
+    def __init__(self):
+        self.face_cascade = None
+        self.eye_cascade = None
+        self._load_cascades()
+    
+    def _load_cascades(self):
+        """Load OpenCV Haar cascades"""
+        try:
+            # OpenCV built-in cascades
+            cascade_path = cv2.data.haarcascades
+            self.face_cascade = cv2.CascadeClassifier(
+                os.path.join(cascade_path, 'haarcascade_frontalface_default.xml')
+            )
+            self.eye_cascade = cv2.CascadeClassifier(
+                os.path.join(cascade_path, 'haarcascade_eye.xml')
+            )
+            print("✓ OpenCV face detector loaded")
+        except Exception as e:
+            print(f"! Could not load cascades: {e}")
+    
+    def detect_and_crop(self, image_path, padding=30):
+        """Detect face and return cropped image"""
         try:
             # Load image
             if isinstance(image_path, str):
-                img = Image.open(image_path).convert("RGB")
-                img_np = np.array(img)
+                img = PILImage.open(image_path).convert("RGB")
             else:
                 img = image_path
-                img_np = np.array(img)
             
-            # Try to detect face
-            face_cropped = None
-            message = ""
+            # Convert to OpenCV format
+            img_cv = cv2.cvtColor(np.array(img), cv2.COLOR_RGB2BGR)
+            gray = cv2.cvtColor(img_cv, cv2.COLOR_BGR2GRAY)
             
-            if self.has_mtcnn and self.detector:
-                # Use MTCNN for face detection
-                faces = self.detector.detect_faces(img_np)
+            # Detect faces
+            faces = self.face_cascade.detectMultiScale(
+                gray,
+                scaleFactor=1.1,
+                minNeighbors=5,
+                minSize=(60, 60)
+            )
+            
+            if len(faces) > 0:
+                # Get the largest face
+                best_face = max(faces, key=lambda f: f[2] * f[3])
+                x, y, w, h = best_face
                 
-                if faces:
-                    # Get the largest face
-                    best_face = max(faces, key=lambda x: x['box'][2] * x['box'][3])
-                    x, y, w, h = best_face['box']
-                    
-                    # Add padding
-                    x = max(0, x - add_padding)
-                    y = max(0, y - add_padding)
-                    w = min(img.width - x, w + (2 * add_padding))
-                    h = min(img.height - y, h + (2 * add_padding))
-                    
-                    # Crop face
-                    face_cropped = img.crop((x, y, x + w, y + h))
-                    message = f"Face detected (conf: {best_face['confidence']:.2f})"
-                else:
-                    # No face detected, use full image
-                    face_cropped = img
-                    message = "No face detected, using full image"
-            else:
-                # Fallback: just resize the image (mock detection)
-                face_cropped = img
-                img.thumbnail((200, 200))
-                message = "Mock detection: using full image"
+                # Add padding
+                x = max(0, x - padding)
+                y = max(0, y - padding)
+                w = min(img.width - x, w + (2 * padding))
+                h = min(img.height - y, h + (2 * padding))
+                
+                # Crop face
+                cropped = img.crop((x, y, x + w, y + h))
+                cropped.thumbnail((250, 250), PILImage.LANCZOS)
+                
+                return cropped, f"Face detected ✓"
             
-            # Make square for circular display
-            if face_cropped:
-                size = max(face_cropped.width, face_cropped.height)
-                squared = Image.new('RGB', (size, size), (0, 0, 0))
-                x = (size - face_cropped.width) // 2
-                y = (size - face_cropped.height) // 2
-                squared.paste(face_cropped, (x, y))
-                squared.thumbnail((250, 250))
-                return squared, message
+            # Fallback: center crop
+            size = min(img.width, img.height)
+            left = (img.width - size) // 2
+            top = (img.height - size) // 2
+            cropped = img.crop((left, top, left + size, top + size))
+            cropped.thumbnail((250, 250), PILImage.LANCZOS)
             
-            return None, "Could not process image"
+            return cropped, "No face found (center crop)"
             
         except Exception as e:
-            print(f"Face detection error: {e}")
+            print(f"Detection error: {e}")
             return None, f"Error: {str(e)[:30]}"
-
-# Create global instance
-face_detector = FaceDetector()
+    
+    def detect_faces_only(self, image_path):
+        """Return list of face coordinates"""
+        try:
+            if isinstance(image_path, str):
+                img = PILImage.open(image_path).convert("RGB")
+            else:
+                img = image_path
+            
+            img_cv = cv2.cvtColor(np.array(img), cv2.COLOR_RGB2BGR)
+            gray = cv2.cvtColor(img_cv, cv2.COLOR_BGR2GRAY)
+            
+            faces = self.face_cascade.detectMultiScale(
+                gray,
+                scaleFactor=1.1,
+                minNeighbors=5,
+                minSize=(60, 60)
+            )
+            
+            return faces.tolist() if len(faces) > 0 else []
+            
+        except Exception as e:
+            print(f"Detection error: {e}")
+            return []
