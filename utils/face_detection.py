@@ -1,4 +1,3 @@
-# ui/face_detector.py - Lightweight face detection using OpenCV
 import cv2
 import numpy as np
 from PIL import Image as PILImage

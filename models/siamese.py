@@ -1,4 +1,3 @@
-# models/siamese.py - Complete version with ContrastiveLoss
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -201,3 +200,4 @@ def compare_faces_with_validation(model, img1, img2, th_same, th_twin, device="c
    except Exception as e:
       print(f"Validation error: {e}")
       return 0.5, f"Error: {str(e)[:30]}", {}
+   

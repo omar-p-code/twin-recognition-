@@ -1,4 +1,3 @@
-# inference/predict.py - Updated to read all checkpoint info
 import torch
 import os
 from models.siamese import SiameseNetwork

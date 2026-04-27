@@ -2,7 +2,7 @@
 import sys
 import os
 import io
-from PIL import Image as PILImage
+# from PIL import Image as PILImage
 
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -21,6 +21,16 @@ from kivy.uix.progressbar import ProgressBar
 from kivy.core.image import Image as CoreImage
 from kivy.uix.floatlayout import FloatLayout
 from kivy.utils import platform
+
+
+checkpoint_path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'checkpoints', 'siamese_best.pth')
+if not os.path.exists(checkpoint_path):
+    print(f"❌ Model checkpoint not found at: {checkpoint_path}")
+    print("Please train the model first using: python train.py")
+    exit(1)
+
+from inference.predict import load_model
+model, TH_SAME, TH_TWIN = load_model(checkpoint_path, device='cpu')
 
 # Try to import plyer for native file picker
 try:
@@ -83,17 +93,7 @@ from utils.face_detection import FaceDetector
 
 face_detector = FaceDetector()
 
-def compare_faces_simple(face1, face2):
-    try:
-        import numpy as np
-        arr1 = np.array(face1.resize((64, 64))).astype(np.float32)
-        arr2 = np.array(face2.resize((64, 64))).astype(np.float32)
-        distance = min(1.0, np.mean((arr1-arr2)**2) / (255**2))
-        if distance < 0.35: return distance, "Same Person"
-        elif distance < 0.65: return distance, "Twins"
-        return distance, "Different People"
-    except:
-        return 0.5, "Error"
+from models.siamese import compare_faces
 
 # ================== FILE PICKER ==================
 def open_file_picker(callback):
@@ -410,8 +410,11 @@ class TwinUI(BoxLayout):
         
         def do_comparison(dt):
             try:
-                distance, result = compare_faces_simple(self.cropped_face1, self.cropped_face2)
+                distance, result, detection_info = compare_faces(model ,self.cropped_face1, self.cropped_face2, TH_SAME, TH_TWIN, device='cpu', detect_faces=True)
                 popup.dismiss()
+                print(f"Comparison result: {result} (distance: {distance:.4f})")
+                print(f"Detection info: {detection_info}")
+                print(f"Thresholds: same={TH_SAME}, twin={TH_TWIN}")
                 
                 if result == "Same Person":
                     self.result_label.text = "✅ SAME PERSON"

@@ -1,11 +1,5 @@
-torch
-torchvision
-torchaudio
-torchmetrics
+kivy
 pillow
 numpy
-tqdm
-matplotlib
-kivy
-onnxruntime
-opencv-python
+opencv
+plyer

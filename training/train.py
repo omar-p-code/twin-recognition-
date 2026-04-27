@@ -1,4 +1,3 @@
-# training/train.py - Auto-resume with dynamic total epochs
 import torch
 from torch.utils.data import DataLoader
 import torchvision.transforms as transforms
