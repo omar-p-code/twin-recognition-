@@ -29,7 +29,7 @@ def calibrate_thresholds(model, loader, device):
             dist = torch.nn.functional.pairwise_distance(out1, out2)
 
             for d, l in zip(dist.cpu().numpy(), label.cpu().numpy()):
-               if l == 1:
+               if l == 0:
                   same_dist.append(float(d))
                else:
                   diff_dist.append(float(d))
