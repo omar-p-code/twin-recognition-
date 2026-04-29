@@ -21,8 +21,7 @@ class SiameseNetwork(nn.Module):
       super().__init__()
       
       base_model = models.resnet18(
-            weights=models.ResNet18_Weights.DEFAULT,
-            pretrained=True
+            weights=models.ResNet18_Weights.DEFAULT
       )
       
       self.feature_extractor = nn.Sequential(
