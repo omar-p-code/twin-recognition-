@@ -201,7 +201,7 @@ def train():
       }
       
       # Save epoch checkpoint
-      torch.save(checkpoint, os.path.join(CHECKPOINT_DIR, f"checkpoint_epoch_{epoch+1}.pth"))
+      # torch.save(checkpoint, os.path.join(CHECKPOINT_DIR, f"checkpoint_epoch_{epoch+1}.pth"))
       
       # Save if best
       if epoch_loss < best_loss:
@@ -220,6 +220,21 @@ def train():
       
       # Always save latest
       torch.save(checkpoint, os.path.join(CHECKPOINT_DIR, "siamese_latest.pth"))
+      
+      # onnx export every 5 epochs
+      if (epoch + 1) % 5 == 0:
+            dummy_input1 = torch.randn(1, 3, IMG_SIZE, IMG_SIZE).to(DEVICE)
+            dummy_input2 = torch.randn(1, 3, IMG_SIZE, IMG_SIZE).to(DEVICE)
+            onnx_path = os.path.join(CHECKPOINT_DIR, f"siamese_epoch_{epoch+1}.onnx")
+            torch.onnx.export(
+                  model,
+                  (dummy_input1, dummy_input2),
+                  onnx_path,
+                  input_names=['img1', 'img2'],
+                  output_names=['out1', 'out2'],
+                  opset_version=11
+            )
+            print(f"  📦 Exported ONNX model: {onnx_path}")
    
    print(f"\n{'='*50}")
    print(f"✅ Training completed!")
