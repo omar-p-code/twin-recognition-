@@ -97,12 +97,11 @@ def validate(model, loader, criterion, device):
    return total_loss / len(loader)
 
 
-def save_checkpoint(model, optimizer, epoch, loss, best_loss, th_same, th_twin, checkpoint_dir):
+def save_checkpoint(model, epoch, loss, best_loss, th_same, th_twin, checkpoint_dir):
    """Save single checkpoint file (overwrites)"""
    ckpt = {
       "epoch": epoch,
       "model_state_dict": model.state_dict(),
-      "optimizer_state_dict": optimizer.state_dict(),
       "loss": loss,
       "best_loss": best_loss,
       "threshold_same": th_same,
@@ -206,7 +205,7 @@ def train():
             print(f"  New best model! (val_loss={val_loss:.4f})")
 
             th_same, th_twin = calibrate_thresholds(model, val_loader, DEVICE)
-            save_checkpoint(model, optimizer, epoch, train_loss, best_loss, th_same, th_twin, CHECKPOINT_DIR)
+            save_checkpoint(model, epoch, train_loss, best_loss, th_same, th_twin, CHECKPOINT_DIR)
             export_onnx(model, CHECKPOINT_DIR, DEVICE)
 
    print(f"\nDone | Best val_loss: {best_loss:.4f} | same={th_same:.4f} twin={th_twin:.4f}")
