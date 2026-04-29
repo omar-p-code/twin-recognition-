@@ -23,7 +23,7 @@ from kivy.uix.floatlayout import FloatLayout
 from kivy.utils import platform
 
 
-checkpoint_path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'checkpoints', 'siamese_best.pth')
+checkpoint_path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'checkpoints', 'checkpoint.pth')
 if not os.path.exists(checkpoint_path):
     print(f"❌ Model checkpoint not found at: {checkpoint_path}")
     print("Please train the model first using: python train.py")
