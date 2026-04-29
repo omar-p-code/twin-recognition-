@@ -15,45 +15,41 @@ from config import *
 
 
 # ===============================
-# Threshold Calibration (FIXED)
+# Threshold Calibration
 # ===============================
 def calibrate_thresholds(model, loader, device):
    model.eval()
 
-   same_dist = []
-   diff_dist = []
+   same_dist, diff_dist = [], []
 
    with torch.no_grad():
       for img1, img2, label in tqdm(loader, desc="Calibrating"):
-            img1, img2, label = img1.to(device), img2.to(device), label.to(device)
+            img1, img2 = img1.to(device), img2.to(device)
 
-            out1, out2 = model(img1, img2)
-            dist = torch.nn.functional.pairwise_distance(out1, out2)
+            e1, e2 = model(img1, img2)
+            dist = torch.norm(e1 - e2, dim=1)
 
-            for d, l in zip(dist.cpu().numpy(), label.cpu().numpy()):
-               # IMPORTANT FIX: assume
-               # 1 = same, 0 = different (common in Siamese datasets)
+            label = label.cpu().numpy()
+
+            for d, l in zip(dist.cpu().numpy(), label):
                if l == 1:
-                  same_dist.append(float(d))
+                  same_dist.append(d)
                else:
-                  diff_dist.append(float(d))
+                  diff_dist.append(d)
 
    same_dist = np.array(same_dist)
    diff_dist = np.array(diff_dist)
 
-   # robust thresholds (less overfitting)
-   th_same = np.percentile(same_dist, 90) if len(same_dist) else 0.35
-   th_twin = np.percentile(diff_dist, 10) if len(diff_dist) else 0.60
+   th_same = np.mean(same_dist) + np.std(same_dist)
+   th_twin = np.mean(diff_dist) - np.std(diff_dist)
 
-   # safety margin
-   if th_twin - th_same < 0.15:
+   if th_twin <= th_same:
       mid = (th_same + th_twin) / 2
       th_same = mid - 0.1
       th_twin = mid + 0.1
 
    model.train()
    return float(th_same), float(th_twin)
-
 
 # ===============================
 # Checkpoint Loader (SAFE)
@@ -62,10 +58,10 @@ def load_checkpoint(model, optimizer, checkpoint_dir, device):
    path = os.path.join(checkpoint_dir, "siamese_best.pth")
 
    if not os.path.exists(path):
-      print("⚠️ No checkpoint found")
+      print(" No checkpoint found")
       return 0, float('inf'), 0.35, 0.60
 
-   print(f"📂 Loading: {path}")
+   print(f" Loading: {path}")
    checkpoint = torch.load(path, map_location=device)
 
    model.load_state_dict(checkpoint["model_state_dict"])
@@ -96,7 +92,7 @@ def train():
       transforms.Normalize([0.485,0.456,0.406],[0.229,0.224,0.225])
    ])
 
-   print("📦 Loading dataset...")
+   print(" Loading dataset...")
    train_dataset = PairDataset(f"{DATA_DIR}/train", transform)
    val_dataset = PairDataset(f"{DATA_DIR}/val", transform)
 
@@ -160,7 +156,6 @@ def train():
 
             print(f"🎯 same={th_same:.3f} twin={th_twin:.3f}")
 
-      # SAFE ONNX EXPORT
       if (epoch + 1) % 5 == 0:
             try:
                dummy1 = torch.randn(1, 3, IMG_SIZE, IMG_SIZE).to(DEVICE)
