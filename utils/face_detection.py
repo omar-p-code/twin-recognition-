@@ -64,14 +64,12 @@ class FaceDetector:
                 
                 return cropped, f"Face detected ✓"
             
-            # Fallback: center crop
-            size = min(img.width, img.height)
-            left = (img.width - size) // 2
-            top = (img.height - size) // 2
-            cropped = img.crop((left, top, left + size, top + size))
+            # Fallback: return the same image
+            # size = min(img.width, img.height)
+            cropped = img
             cropped.thumbnail((250, 250), PILImage.LANCZOS)
             
-            return cropped, "No face found (center crop)"
+            return cropped, "No face found - the entire image will be used"
             
         except Exception as e:
             print(f"Detection error: {e}")

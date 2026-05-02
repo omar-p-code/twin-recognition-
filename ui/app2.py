@@ -20,8 +20,9 @@ from kivy.metrics import dp, sp
 from kivy.uix.popup import Popup
 from kivy.uix.progressbar import ProgressBar
 from kivy.core.image import Image as CoreImage
-from kivy.uix.floatlayout import FloatLayout
-from kivy.uix.scrollview import ScrollView
+# from kivy.uix.floatlayout import FloatLayout
+# from kivy.uix.scrollview import ScrollView
+from kivy.utils import platform
 
 checkpoint_path = os.path.join(
     os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
@@ -39,11 +40,57 @@ from models.siamese import compare_faces
 
 model, TH_SAME, TH_TWIN = load_model(checkpoint_path, device='cpu')
 
+# Try to import plyer for native file picker
+try:
+    from plyer import filechooser as plyer_filechooser
+    HAS_PLYER = True
+except ImportError:
+    HAS_PLYER = False
+    print("! Plyer not installed - using Kivy file picker")
+
+# Android permissions
+if platform == 'android':
+    try:
+        from android.permissions import request_permissions, Permission
+        request_permissions([
+            Permission.READ_EXTERNAL_STORAGE,
+            Permission.WRITE_EXTERNAL_STORAGE,
+            Permission.READ_MEDIA_IMAGES
+        ])
+    except:
+        pass
+
+
+# ================== LAST DIRECTORY MEMORY ==================
+def get_last_dir_file():
+    return os.path.join(os.path.dirname(os.path.abspath(__file__)), 'last_dir.txt')
+
+def save_last_directory(path):
+    try:
+        directory = os.path.dirname(path) if os.path.isfile(path) else path
+        with open(get_last_dir_file(), 'w') as f:
+            f.write(directory)
+    except:
+        pass
+
+def load_last_directory():
+    try:
+        last_dir_file = get_last_dir_file()
+        if os.path.exists(last_dir_file):
+            with open(last_dir_file, 'r') as f:
+                directory = f.read().strip()
+                if os.path.exists(directory):
+                    return directory
+    except:
+        pass
+    return os.path.expanduser('~')
+
+
 face_detector = FaceDetector()
 
 # ================= WINDOW =================
-Window.size = (390, 720)
-Window.clearcolor = (0.96, 0.97, 0.99, 1)
+Window.size = (360, 640)
+Window.clearcolor = (0.07, 0.07, 0.1, 1)
 
 # ================= COLORS =================
 BG = (0.96, 0.97, 0.99, 1)
