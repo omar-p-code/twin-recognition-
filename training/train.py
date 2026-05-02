@@ -15,44 +15,57 @@ from config import *
 
 
 def calibrate_thresholds(model, loader, device):
-   """Calculate same/twin thresholds from validation data"""
    model.eval()
-   same_dist, diff_dist = [], []
+
+   same_dist = []
+   diff_dist = []
 
    with torch.no_grad():
-      for img1, img2, label in loader:
-            img1, img2, label = img1.to(device), img2.to(device), label.to(device)
-            e1, e2 = model(img1, img2)
-            dist = torch.norm(e1 - e2, dim=1)
+      for img1, img2, label in tqdm(loader, desc="Calibrating"):
 
-            for d, l in zip(dist.cpu().numpy(), label.cpu().numpy()):
+            img1 = img1.to(device)
+            img2 = img2.to(device)
+
+            e1, e2 = model(img1, img2)
+
+            distances = torch.nn.functional.pairwise_distance(e1, e2)
+
+            for d, l in zip(distances.cpu().numpy(), label.numpy()):
+
                if l == 1:
                   same_dist.append(float(d))
                else:
                   diff_dist.append(float(d))
 
-   if len(same_dist) == 0 or len(diff_dist) == 0:
-      model.train()
-      return 0.35, 0.60
-
    same_dist = np.array(same_dist)
    diff_dist = np.array(diff_dist)
 
-   th_same = min(np.percentile(same_dist, 95), 0.35)
-   th_twin = max(np.percentile(diff_dist, 5), 0.50)
+   # Statistics
+   same_mean = np.mean(same_dist)
+   same_std = np.std(same_dist)
 
-   if th_twin - th_same < 0.10:
-      mid = (th_same + th_twin) / 2
-      th_same = mid - 0.08
-      th_twin = mid + 0.08
+   diff_mean = np.mean(diff_dist)
+   diff_std = np.std(diff_dist)
 
-   print(f"  Thresholds: same={th_same:.4f} twin={th_twin:.4f} "
-         f"(same: mean={same_dist.mean():.3f} std={same_dist.std():.3f}, "
-         f"diff: mean={diff_dist.mean():.3f} std={diff_dist.std():.3f})")
+   # Main threshold between classes
+   threshold = (same_mean + diff_mean) / 2
+
+   # Optional tighter same threshold
+   th_same = same_mean + same_std * 0.5
+
+   # Twin threshold = center split
+   th_twin = threshold
+
+   print(
+      f"\n📊 Calibration Stats:"
+      f"\n  SAME  -> mean={same_mean:.4f} std={same_std:.4f}"
+      f"\n  DIFF  -> mean={diff_mean:.4f} std={diff_std:.4f}"
+      f"\n  FINAL -> same={th_same:.4f} twin={th_twin:.4f}"
+   )
 
    model.train()
-   return float(th_same), float(th_twin)
 
+   return float(th_same), float(th_twin)
 
 def load_checkpoint(model, optimizer, checkpoint_dir, device):
    """Load checkpoint for resume training"""
@@ -145,13 +158,13 @@ def train():
       transforms.RandomRotation(10),
       transforms.ColorJitter(brightness=0.1, contrast=0.1),
       transforms.ToTensor(),
-      transforms.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225])
+      transforms.Normalize(NORMALIZE_MEAN, NORMALIZE_STD)
    ])
 
    val_transform = transforms.Compose([
       transforms.Resize((IMG_SIZE, IMG_SIZE)),
       transforms.ToTensor(),
-      transforms.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225])
+      transforms.Normalize(NORMALIZE_MEAN, NORMALIZE_STD)
    ])
 
    train_dataset = PairDataset(f"{DATA_DIR}/train", train_transform)

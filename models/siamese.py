@@ -3,18 +3,13 @@ import torch.nn as nn
 import torch.nn.functional as F
 import torchvision.models as models
 from PIL import Image
-import numpy as np
+# import numpy as np
 import os
 import sys
+from config import *
 
 # Add parent directory to path
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-
-# Default IMG_SIZE if not available
-try:
-   from config import IMG_SIZE
-except ImportError:
-   IMG_SIZE = 128
 
 class SiameseNetwork(nn.Module):
    def __init__(self):
@@ -31,7 +26,7 @@ class SiameseNetwork(nn.Module):
       self.fc = nn.Sequential(
             nn.Linear(512, 128),
             nn.ReLU(inplace=True),
-            nn.Linear(128, 64)
+            nn.Linear(128, EMBEDDING_DIM)
       )
       
    def forward_once(self, x):
@@ -78,31 +73,7 @@ class ContrastiveLoss(nn.Module):
 
 
 # ================== DATA PREPROCESSING ==================
-def preprocess_image(image_input):
-   """
-   Preprocess image from path or PIL Image
-   """
-   try:
-      if isinstance(image_input, str):
-            img = Image.open(image_input).convert("RGB")
-      else:
-            img = image_input
-      
-      img = img.resize((IMG_SIZE, IMG_SIZE))
-      img = np.array(img).astype("float32") / 255.0
-      
-      mean = np.array([0.485, 0.456, 0.406])
-      std = np.array([0.229, 0.224, 0.225])
-      
-      img = (img - mean) / std
-      img = np.transpose(img, (2, 0, 1))
-      img = np.expand_dims(img, axis=0)
-      
-      return torch.tensor(img, dtype=torch.float32)
-   except Exception as e:
-      print(f"Preprocessing error: {e}")
-      raise
-
+from utils.preprocess import preprocess_image
 
 # ================== FACE COMPARISON FUNCTIONS ==================
 def compare_faces(model, img1, img2, th_same, th_twin, device="cpu", detect_faces=True):
