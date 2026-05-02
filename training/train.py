@@ -156,7 +156,12 @@ def train():
       transforms.Resize((IMG_SIZE, IMG_SIZE)),
       transforms.RandomHorizontalFlip(),
       transforms.RandomRotation(10),
-      transforms.ColorJitter(brightness=0.1, contrast=0.1),
+      transforms.ColorJitter(
+         brightness=0.2,
+         contrast=0.2,
+         saturation=0.2
+      ),
+      transforms.RandomResizedCrop(IMG_SIZE, scale=(0.8, 1.0)),
       transforms.ToTensor(),
       transforms.Normalize(NORMALIZE_MEAN, NORMALIZE_STD)
    ])

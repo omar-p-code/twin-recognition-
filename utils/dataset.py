@@ -5,9 +5,11 @@ from torch.utils.data import Dataset
 
 
 class PairDataset(Dataset):
-    def __init__(self, root_dir, transform=None):
+
+    def __init__(self, root_dir, transform=None, hard_negative_prob=0.3):
         self.root_dir = root_dir
         self.transform = transform
+        self.hard_negative_prob = hard_negative_prob
 
         self.classes = os.listdir(root_dir)
         self.class_to_images = {}
@@ -19,18 +21,28 @@ class PairDataset(Dataset):
         self.all_classes = list(self.class_to_images.keys())
 
     def __len__(self):
-        return 10000
+        return 20000  # زودها شوية
 
     def __getitem__(self, idx):
 
-        if random.random() > 0.5:
-            # same
+        # SAME PERSON
+        if random.random() < 0.5:
             cls = random.choice(self.all_classes)
             img1, img2 = random.sample(self.class_to_images[cls], 2)
             label = 1
+
         else:
-            # different
-            cls1, cls2 = random.sample(self.all_classes, 2)
+            # HARD NEGATIVE vs EASY NEGATIVE
+            if random.random() < self.hard_negative_prob:
+
+                # HARD negative (manual or similar classes)
+                cls1, cls2 = random.sample(self.all_classes, 2)
+
+                # ممكن هنا تضيف logic later للـ similarity
+            else:
+                # EASY negative
+                cls1, cls2 = random.sample(self.all_classes, 2)
+
             img1 = random.choice(self.class_to_images[cls1])
             img2 = random.choice(self.class_to_images[cls2])
             label = 0
