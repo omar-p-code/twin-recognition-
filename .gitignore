@@ -1,0 +1,8 @@
+kivy_env/
+__pycashe__/
+*.pyc
+venv/
+.buildozer/
+*.pth
+*.onnx
+checkpoints/
