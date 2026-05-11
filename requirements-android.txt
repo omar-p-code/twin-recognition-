@@ -1,0 +1,10 @@
+# ─────────────────────────────────────────────────────
+# Android runtime requirements (no PyTorch — too heavy)
+# These map to buildozer `requirements` in buildozer.spec
+# ─────────────────────────────────────────────────────
+# kivy                — UI framework
+# pillow              — image loading/resizing
+# numpy               — tensor math
+# opencv              — face detection (Haar cascade fallback)
+# onnxruntime         — model inference (no PyTorch needed)
+# plyer               — native Android file/camera picker

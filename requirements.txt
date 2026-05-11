@@ -1,0 +1,28 @@
+# ─────────────────────────────────────────────────────
+# Twin Recognition — Desktop / Training requirements
+# Install with: pip install -r requirements.txt
+# ─────────────────────────────────────────────────────
+
+# Deep learning
+torch>=2.2.0
+torchvision>=0.17.0
+
+# Image processing
+Pillow>=10.0.0
+opencv-python>=4.9.0.80
+numpy>=1.26.0
+
+# Face detection (MTCNN — high accuracy)
+facenet-pytorch>=2.6.0
+
+# Training utilities
+scikit-learn>=1.4.0       # ROC-based threshold calibration
+tqdm>=4.66.0              # progress bars
+
+# ONNX export (for Android deployment)
+onnx>=1.16.0
+onnxruntime>=1.18.0
+
+# Mobile UI (desktop testing only)
+kivy>=2.3.0
+plyer>=2.1.0              # native file picker
