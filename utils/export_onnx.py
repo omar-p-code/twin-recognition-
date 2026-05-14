@@ -14,8 +14,8 @@ try:
     print("✅ Imported SiameseNetwork from models.siamese")
 except:
     try:
-        # Option B: If your model is defined elsewhere
         from model import SiameseNetwork
+        # Option B: If your model is defined elsewhere
         print("✅ Imported SiameseNetwork from model")
     except:
         # Option C: Define your model architecture here (if needed)

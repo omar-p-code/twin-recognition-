@@ -39,7 +39,7 @@ class SiameseNetwork(nn.Module):
         x = self.feature_extractor(x)
         x = x.view(x.size(0), -1)   # flatten: (B, 2048)
         x = self.fc(x)
-        x = F.normalize(x, p=2, dim=1)  # L2-normalise → unit sphere
+        # x = F.normalize(x, p=2, dim=1)  # L2-normalise → unit sphere
         return x
 
     def forward(self, x1, x2):
