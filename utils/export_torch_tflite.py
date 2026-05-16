@@ -1,77 +1,77 @@
-import sys
-import os
+"""
+Export a trained Siamese model to TFLite for Android.
+Usage: python export_tflite.py
+"""
+
 import torch
-import onnx
-import subprocess
+import os
+import sys
 
-sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 
-from models.siamese import SiameseNetwork  # your existing Siamese model class
-from config import IMG_SIZE, DEVICE  # adjust as needed
+from models.siamese import SiameseNetwork
+from config import CHECKPOINT_DIR, IMG_SIZE, DEVICE
 
-CHECKPOINT_PATH = "checkpoints/checkpoint.pth"
-OUTPUT_ONNX = "model.onnx"
-OUTPUT_TFLITE = "model.tflite"
+def export_to_tflite():
+    # 1. Load model
+    model = SiameseNetwork().to(DEVICE)
+    checkpoint_path = os.path.join(CHECKPOINT_DIR, "checkpoint.pth")
+    if not os.path.exists(checkpoint_path):
+        print(f"❌ Checkpoint not found at {checkpoint_path}")
+        return
 
-def load_model():
-    """Load the trained SiameseNetwork model."""
-    model = SiameseNetwork()
-    checkpoint = torch.load(CHECKPOINT_PATH, map_location="cpu")
-    if 'model_state_dict' in checkpoint:
-        model.load_state_dict(checkpoint['model_state_dict'])
-    else:
-        model.load_state_dict(checkpoint)
-    model.eval()
-    return model
+    checkpoint = torch.load(checkpoint_path, map_location=DEVICE)
+    model.load_state_dict(checkpoint["model_state_dict"])
+    model.eval()   # crucial – disables dropout, batch norm uses running stats
+    print("✅ Model loaded and set to eval mode")
 
-def export_onnx(model):
-    """Export ONNX with two inputs and two outputs."""
-    dummy_a = torch.randn(1, 3, IMG_SIZE, IMG_SIZE)
-    dummy_b = torch.randn(1, 3, IMG_SIZE, IMG_SIZE)
+    # 2. Export to ONNX
+    onnx_path = os.path.join(CHECKPOINT_DIR, "model.onnx")
+    dummy_input = torch.randn(1, 3, IMG_SIZE, IMG_SIZE).to(DEVICE)
 
     torch.onnx.export(
         model,
-        (dummy_a, dummy_b),
-        OUTPUT_ONNX,
-        input_names=["image_a", "image_b"],
-        output_names=["embedding_a", "embedding_b"],
-        opset_version=12,
+        (dummy_input, dummy_input),          # two inputs (img1, img2)
+        onnx_path,
+        input_names=["img1", "img2"],
+        output_names=["emb1", "emb2"],
+        opset_version=17,                   # stable for TFLite conversion
+        do_constant_folding=True,
         dynamic_axes={
-            "image_a": {0: "batch_size"},
-            "image_b": {0: "batch_size"},
-            "embedding_a": {0: "batch_size"},
-            "embedding_b": {0: "batch_size"}
+            "img1": {0: "batch_size"},
+            "img2": {0: "batch_size"},
+            "emb1": {0: "batch_size"},
+            "emb2": {0: "batch_size"}
         }
     )
-    # Verify ONNX
-    onnx_model = onnx.load(OUTPUT_ONNX)
-    onnx.checker.check_model(onnx_model)
-    print(f"✅ ONNX exported with two inputs: image_a, image_b")
-    return OUTPUT_ONNX
+    print(f"✅ ONNX model saved to {onnx_path}")
 
-def convert_to_tflite(onnx_path):
-    """Convert ONNX to TFLite while preserving two inputs."""
-    # Run onnx2tf without unknown flags
-    cmd = ["onnx2tf", "-i", onnx_path, "-o", "."]
-    subprocess.run(cmd, check=True)
+    # 3. Convert ONNX to TFLite using onnx2tf
+    # You must have onnx2tf installed: pip install onnx2tf
+    from onnx2tf import convert
 
-    # Find the generated .tflite file (it may be model_float32.tflite or model.tflite)
-    tflite_files = [f for f in os.listdir(".") if f.endswith(".tflite")]
-    if not tflite_files:
-        raise FileNotFoundError("No .tflite file was generated.")
-    # Use the first one found
-    generated = tflite_files[0]
-    os.rename(generated, OUTPUT_TFLITE)
-    print(f"✅ TFLite exported: {OUTPUT_TFLITE} (two inputs preserved)")
-    
-def main():
-    print("Loading Siamese model...")
-    model = load_model()
-    print("Exporting ONNX with two inputs...")
-    export_onnx(model)
-    print("Converting ONNX → TFLite with two inputs...")
-    convert_to_tflite(OUTPUT_ONNX)
-    print("🎉 Done! Your TFLite model now accepts two separate inputs.")
+    # Output folder for TFLite models
+    output_dir = os.path.join(CHECKPOINT_DIR, "tflite_model")
+    os.makedirs(output_dir, exist_ok=True)
+
+    convert(
+        input_onnx_file_path=onnx_path,
+        output_folder_path=output_dir,
+        # Recommended flags for Android
+        not_use_onnxsim=True,          # skip onnxsim (faster)
+        keep_input_and_output_names=True,
+        output_integer_quantized_tflite=True,   # quantized model (smaller)
+        integer_quantization_input_dtype="float32",  # input still float
+        # Use full integer quantization if you want (requires calibration)
+        # disable_per_channel=True,    # uncomment if you encounter issues
+    )
+    print(f"✅ TFLite model saved to {output_dir}/model_float32.tflite (or quantized)")
+
+    # 4. Optional: also export a full-integer (int8) quantized model
+    # For that you would need to provide a calibration dataset.
+    # Skipping for now.
+
+    print("\n🎉 Export complete. Copy the .tflite file to your Android assets folder.")
 
 if __name__ == "__main__":
-    main()
+    export_to_tflite()
