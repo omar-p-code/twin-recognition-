@@ -136,23 +136,35 @@ class TripletDataset(Dataset):
     def __len__(self):
         return 20000
 
-    def __getitem__(self, idx):
-        anchor_cls = random.choice(self.valid_classes)
-        anchor_path, positive_path = random.sample(self.class_to_images[anchor_cls], 2)
+def __getitem__(self, idx):
+    while True:  # keep retrying until we find a valid triplet
+        try:
+            anchor_cls = random.choice(self.valid_classes)
+            anchor_path, positive_path = random.sample(self.class_to_images[anchor_cls], 2)
 
-        negative_cls = random.choice([c for c in self.all_classes if c != anchor_cls])
-        negative_path = random.choice(self.class_to_images[negative_cls])
+            negative_cls = random.choice([c for c in self.all_classes if c != anchor_cls])
+            negative_path = random.choice(self.class_to_images[negative_cls])
 
-        anchor = Image.open(anchor_path).convert("RGB")
-        positive = Image.open(positive_path).convert("RGB")
-        negative = Image.open(negative_path).convert("RGB")
+            # Open images – will raise FileNotFoundError if missing
+            anchor = Image.open(anchor_path).convert("RGB")
+            positive = Image.open(positive_path).convert("RGB")
+            negative = Image.open(negative_path).convert("RGB")
 
-        if self.transform:
-            anchor = self.transform(anchor)
-            positive = self.transform(positive)
-            negative = self.transform(negative)
+            if self.transform:
+                anchor = self.transform(anchor)
+                positive = self.transform(positive)
+                negative = self.transform(negative)
 
-        return anchor, positive, negative
+            return anchor, positive, negative
+
+        except FileNotFoundError as e:
+            # Log the missing file and retry with a new random sample
+            print(f"⚠️ Skipping missing file: {e.filename}")
+            continue
+        except Exception as e:
+            # Catch any other error (e.g., corrupt image) and retry
+            print(f"⚠️ Skipping problematic triplet: {e}")
+            continue
 
 
 def auto_detect_twin_pairs(root_dir):

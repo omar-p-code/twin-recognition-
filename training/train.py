@@ -245,7 +245,7 @@ def train():
 
         print(f"Epoch {epoch+1:03d} | train_loss={avg_loss:.4f} | val_loss={val_loss:.4f} | lr={scheduler.get_last_lr()[0]:.2e}")
 
-        if (epoch + 1) % 5 == 0:
+        if (epoch + 1) % 2 == 0:
             th_same_twin, th_twin_diff, overloap = calibrate_threshold(model, val_loader, DEVICE)
 
         if avg_loss < best_loss:
