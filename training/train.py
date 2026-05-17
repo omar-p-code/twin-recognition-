@@ -41,71 +41,53 @@ def get_val_transform():
 # 3‑label threshold calibration
 # -----------------------------------------------------------------------
 def calibrate_threshold(model, val_loader, device):
-    """
-    Returns (th_same_twin, th_twin_diff)
-    """
     model.eval()
-    same_dists = []
-    twin_dists = []
-    diff_dists = []
+    same_dists, twin_dists, diff_dists = [], [], []
 
     with torch.no_grad():
         for img1, img2, label in tqdm(val_loader, desc="Calibrating thresholds"):
             img1, img2 = img1.to(device), img2.to(device)
             e1, e2 = model(img1, img2)
-            if e1.size(0) != e2.size(0):
-                print(f"⚠️ Skipping batch – shape mismatch")
-                continue
+            # Force L2 normalisation if your model doesn't already do it
+            e1 = torch.nn.functional.normalize(e1, p=2, dim=1)
+            e2 = torch.nn.functional.normalize(e2, p=2, dim=1)
             dists = torch.nn.functional.pairwise_distance(e1, e2).cpu().numpy()
             labels_np = label.cpu().numpy()
             for d, l in zip(dists, labels_np):
                 if l == 2:
-                    same_dists.append(float(d))
+                    same_dists.append(d)
                 elif l == 1:
-                    twin_dists.append(float(d))
+                    twin_dists.append(d)
                 else:
-                    diff_dists.append(float(d))
+                    diff_dists.append(d)
 
     same_dists = np.array(same_dists)
     twin_dists = np.array(twin_dists)
     diff_dists = np.array(diff_dists)
 
-    print(f"Statistics:")
-    print(f"  SAME  → mean={np.mean(same_dists):.4f}  std={np.std(same_dists):.4f}")
-    print(f"  TWIN  → mean={np.mean(twin_dists):.4f}  std={np.std(twin_dists):.4f}")
-    print(f"  DIFF  → mean={np.mean(diff_dists):.4f}  std={np.std(diff_dists):.4f}")
+    print(f"Same:  mean={np.mean(same_dists):.4f} max={np.max(same_dists):.4f}")
+    print(f"Twin:  mean={np.mean(twin_dists):.4f} min={np.min(twin_dists):.4f} max={np.max(twin_dists):.4f}")
+    print(f"Diff:  mean={np.mean(diff_dists):.4f} min={np.min(diff_dists):.4f}")
 
-    # Separate same from others (twin + diff)
-    all_dists_1 = np.concatenate([same_dists, twin_dists, diff_dists])
-    all_labels_1 = np.concatenate([np.ones(len(same_dists)),
-                                   np.zeros(len(twin_dists) + len(diff_dists))])
-    if len(np.unique(all_labels_1)) == 2:
-        fpr, tpr, thresholds = roc_curve(all_labels_1, -all_dists_1)
-        j = tpr - fpr
-        best_idx = np.argmax(j)
-        th_same_twin = -thresholds[best_idx]
-    else:
-        th_same_twin = (np.mean(same_dists) + np.mean(np.concatenate([twin_dists, diff_dists]))) / 2
+    # Sanity check (fail if no separation)
+    if np.max(same_dists) >= np.min(diff_dists):
+        print("⚠️ WARNING: Model has not learned proper separation (same/diff overlap).")
+        # Still compute thresholds but they will be unreliable
 
-    # Separate (same + twin) from diff
-    all_dists_2 = np.concatenate([same_dists, twin_dists, diff_dists])
-    all_labels_2 = np.concatenate([np.ones(len(same_dists) + len(twin_dists)),
-                                   np.zeros(len(diff_dists))])
-    if len(np.unique(all_labels_2)) == 2:
-        fpr, tpr, thresholds = roc_curve(all_labels_2, -all_dists_2)
-        j = tpr - fpr
-        best_idx = np.argmax(j)
-        th_twin_diff = -thresholds[best_idx]
-    else:
-        th_twin_diff = (np.mean(np.concatenate([same_dists, twin_dists])) + np.mean(diff_dists)) / 2
+    # Stable max‑min thresholds
+    th_same_twin = (np.max(same_dists) + np.min(twin_dists)) / 2 if len(twin_dists) else np.max(same_dists) + 0.1
+    th_twin_diff = (np.max(twin_dists) + np.min(diff_dists)) / 2 if len(twin_dists) else (np.max(same_dists) + np.min(diff_dists)) / 2
 
-    print(f"\n📊 3‑label calibration:")
-    print(f"  th_same_twin = {th_same_twin:.4f}  (distance < this → SAME)")
+    # Optional: clip to reasonable range [0, 2] for normalised embeddings
+    th_same_twin = np.clip(th_same_twin, 0.1, 1.5)
+    th_twin_diff = np.clip(th_twin_diff, 0.2, 1.8)
+
+    print(f"\n📊 Final thresholds:")
+    print(f"  th_same_twin = {th_same_twin:.4f}  (distance < this → SAME PERSON)")
     print(f"  th_twin_diff = {th_twin_diff:.4f}   (distance between → TWINS, > this → DIFFERENT)")
 
     model.train()
     return th_same_twin, th_twin_diff
-
 # -----------------------------------------------------------------------
 # Validation (binary for monitoring)
 # -----------------------------------------------------------------------

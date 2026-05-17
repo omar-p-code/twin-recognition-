@@ -20,7 +20,7 @@ NORMALIZE_STD  = [0.229, 0.224, 0.225]
 # Training
 # =========================
 BATCH_SIZE     = 32
-NUM_EPOCHS     = 40
+NUM_EPOCHS     = 10
 EMBEDDING_DIM  = 256      # upgraded from 64 — richer face representation
 LEARNING_RATE  = 1e-4
 MARGIN         = 2.0      # contrastive loss margin (kept for compatibility)
