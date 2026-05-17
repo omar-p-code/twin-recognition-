@@ -37,7 +37,7 @@ class SiameseNetwork(nn.Module):
         x = x.view(x.size(0), -1)   # flatten
         x = self.fc(x)
         # Optional L2 normalisation – uncomment if used during training
-        # x = F.normalize(x, p=2, dim=1)
+        x = F.normalize(x, p=2, dim=1)
         return x
 
     def forward(self, x1, x2):
