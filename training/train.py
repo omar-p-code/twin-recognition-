@@ -40,17 +40,26 @@ def get_val_transform():
 # -----------------------------------------------------------------------
 # 3‑label threshold calibration
 # -----------------------------------------------------------------------
-def calibrate_threshold(model, val_loader, device):
+def calibrate_threshold(model, val_loader, device, percentile_low=5, percentile_high=95):
+    """
+    Compute two thresholds (same_twin, twin_diff) using percentiles.
+    Returns (th_same_twin, th_twin_diff, overlap_warning)
+    """
     model.eval()
-    same_dists, twin_dists, diff_dists = [], [], []
+    same_dists = []
+    twin_dists = []
+    diff_dists = []
 
     with torch.no_grad():
         for img1, img2, label in tqdm(val_loader, desc="Calibrating thresholds"):
             img1, img2 = img1.to(device), img2.to(device)
             e1, e2 = model(img1, img2)
-            # Force L2 normalisation if your model doesn't already do it
+
+            # Ensure L2 normalisation (if model doesn't already do it)
+            # This is critical for distance stability
             e1 = torch.nn.functional.normalize(e1, p=2, dim=1)
             e2 = torch.nn.functional.normalize(e2, p=2, dim=1)
+
             dists = torch.nn.functional.pairwise_distance(e1, e2).cpu().numpy()
             labels_np = label.cpu().numpy()
             for d, l in zip(dists, labels_np):
@@ -65,29 +74,47 @@ def calibrate_threshold(model, val_loader, device):
     twin_dists = np.array(twin_dists)
     diff_dists = np.array(diff_dists)
 
-    print(f"Same:  mean={np.mean(same_dists):.4f} max={np.max(same_dists):.4f}")
-    print(f"Twin:  mean={np.mean(twin_dists):.4f} min={np.min(twin_dists):.4f} max={np.max(twin_dists):.4f}")
-    print(f"Diff:  mean={np.mean(diff_dists):.4f} min={np.min(diff_dists):.4f}")
+    # Statistics
+    def stats(arr):
+        return f"mean={np.mean(arr):.4f} std={np.std(arr):.4f} p5={np.percentile(arr,5):.4f} p95={np.percentile(arr,95):.4f}"
 
-    # Sanity check (fail if no separation)
-    if np.max(same_dists) >= np.min(diff_dists):
-        print("⚠️ WARNING: Model has not learned proper separation (same/diff overlap).")
-        # Still compute thresholds but they will be unreliable
+    print("\n📊 Distance distributions:")
+    print(f"  SAME:  {stats(same_dists)}")
+    print(f"  TWIN:  {stats(twin_dists)}")
+    print(f"  DIFF:  {stats(diff_dists)}")
 
-    # Stable max‑min thresholds
-    th_same_twin = (np.max(same_dists) + np.min(twin_dists)) / 2 if len(twin_dists) else np.max(same_dists) + 0.1
-    th_twin_diff = (np.max(twin_dists) + np.min(diff_dists)) / 2 if len(twin_dists) else (np.max(same_dists) + np.min(diff_dists)) / 2
+    # Sanity check: same and diff must be separable
+    overlap_same_diff = np.max(same_dists) >= np.min(diff_dists)
+    if overlap_same_diff:
+        print("\n⚠️ WARNING: same and diff distributions overlap!")
+        print("   Model has not learned proper separation. Thresholds will be unreliable.")
+    else:
+        print("\n✅ Good separation: same and diff are separated.")
 
-    # Optional: clip to reasonable range [0, 2] for normalised embeddings
-    th_same_twin = np.clip(th_same_twin, 0.1, 1.5)
-    th_twin_diff = np.clip(th_twin_diff, 0.2, 1.8)
+    # Compute robust thresholds using percentiles
+    # th_same_twin: upper bound of same (p95) + lower bound of twin (p5)
+    if len(twin_dists) > 0:
+        th_same_twin = (np.percentile(same_dists, percentile_high) + np.percentile(twin_dists, percentile_low)) / 2
+        th_twin_diff = (np.percentile(twin_dists, percentile_high) + np.percentile(diff_dists, percentile_low)) / 2
+    else:
+        # Fallback if no twin samples (should not happen)
+        th_same_twin = np.percentile(same_dists, percentile_high) + 0.1
+        th_twin_diff = (np.percentile(same_dists, percentile_high) + np.percentile(diff_dists, percentile_low)) / 2
 
-    print(f"\n📊 Final thresholds:")
+    # Ensure logical order: th_same_twin < th_twin_diff
+    if th_same_twin >= th_twin_diff:
+        print("⚠️ Warning: thresholds are inverted. Adjusting.")
+        mid = (th_same_twin + th_twin_diff) / 2
+        th_same_twin = mid - 0.1
+        th_twin_diff = mid + 0.1
+
+    print(f"\n📊 Final thresholds (percentile method):")
     print(f"  th_same_twin = {th_same_twin:.4f}  (distance < this → SAME PERSON)")
     print(f"  th_twin_diff = {th_twin_diff:.4f}   (distance between → TWINS, > this → DIFFERENT)")
 
     model.train()
-    return th_same_twin, th_twin_diff
+    return th_same_twin, th_twin_diff, overlap_same_diff
+
 # -----------------------------------------------------------------------
 # Validation (binary for monitoring)
 # -----------------------------------------------------------------------
@@ -219,7 +246,7 @@ def train():
         print(f"Epoch {epoch+1:03d} | train_loss={avg_loss:.4f} | val_loss={val_loss:.4f} | lr={scheduler.get_last_lr()[0]:.2e}")
 
         if (epoch + 1) % 5 == 0:
-            th_same_twin, th_twin_diff = calibrate_threshold(model, val_loader, DEVICE)
+            th_same_twin, th_twin_diff, overloap = calibrate_threshold(model, val_loader, DEVICE)
 
         if avg_loss < best_loss:
             best_loss = avg_loss
@@ -228,7 +255,7 @@ def train():
             print(f"  ✓ New best model saved (loss={best_loss:.4f})")
 
     # Final calibration and export
-    th_same_twin, th_twin_diff = calibrate_threshold(model, val_loader, DEVICE)
+    th_same_twin, th_twin_diff, overloap = calibrate_threshold(model, val_loader, DEVICE)
     save_checkpoint(model, optimizer, NUM_EPOCHS - 1, best_loss, best_loss,
                     th_same_twin, th_twin_diff, CHECKPOINT_DIR)
     export_onnx(model, CHECKPOINT_DIR, DEVICE)
