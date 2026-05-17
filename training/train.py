@@ -167,8 +167,16 @@ def save_checkpoint(model, optimizer, epoch, loss, best_loss, th_same_twin, th_t
         "threshold_same_twin": th_same_twin,
         "threshold_twin_diff": th_twin_diff,
     }
+    ckpt2 = {
+        "epoch": epoch,
+        "model_state_dict": model.state_dict(),
+        "loss": loss,
+        "best_loss": best_loss,
+        "threshold_same_twin": th_same_twin,
+        "threshold_twin_diff": th_twin_diff,
+    }
     torch.save(ckpt, os.path.join(checkpoint_dir, "checkpoint.pth"))
-    torch.save(ckpt, os.path.join(checkpoint_dir, "checkpoint2.pth"))
+    torch.save(ckpt2, os.path.join(checkpoint_dir, "checkpoint2.pth"))
 
 def export_onnx(model, checkpoint_dir, device):
     try:
