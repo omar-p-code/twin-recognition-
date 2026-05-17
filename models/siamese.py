@@ -14,14 +14,13 @@ class SiameseNetwork(nn.Module):
     """
     Siamese network with ResNet50 backbone.
     Removed Dropout for clean TFLite export.
-    BatchNorm1d is kept (usually supported).
     """
     def __init__(self):
         super().__init__()
 
         base_model = models.resnet50(weights=models.ResNet50_Weights.DEFAULT)
 
-        # Feature extractor: remove the final classification head
+        # Feature extractor: remove final classification head
         self.feature_extractor = nn.Sequential(*list(base_model.children())[:-1])
 
         # Projection head: 2048 → 512 → EMBEDDING_DIM (no Dropout)
@@ -29,15 +28,15 @@ class SiameseNetwork(nn.Module):
             nn.Linear(2048, 512),
             nn.BatchNorm1d(512),
             nn.ReLU(inplace=True),
-            # nn.Dropout(0.3),   # ❌ removed for TFLite compatibility
+            # nn.Dropout(0.3),   # removed for TFLite compatibility
             nn.Linear(512, EMBEDDING_DIM),
         )
 
     def forward_once(self, x):
         x = self.feature_extractor(x)
-        x = x.view(x.size(0), -1)   # flatten: (B, 2048)
+        x = x.view(x.size(0), -1)   # flatten
         x = self.fc(x)
-        # Optional: L2 normalize (comment out if not used in training)
+        # Optional L2 normalisation – uncomment if used during training
         # x = F.normalize(x, p=2, dim=1)
         return x
 
@@ -67,8 +66,6 @@ class ContrastiveLoss(nn.Module):
             + (1 - label) * torch.pow(torch.clamp(self.margin - dist, min=0.0), 2)
         )
         return loss
-
-
 # ----- optional face comparison function (unchanged) -----
 from utils.preprocess import preprocess_image
 

@@ -5,19 +5,18 @@ from tqdm import tqdm
 import os
 import numpy as np
 import sys
-import random
 
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from models.siamese import SiameseNetwork, TripletLoss
-from utils.dataset import TripletDataset, FixedPairDataset, auto_detect_twin_pairs, build_fixed_val_pairs
+from models.siamese import SiameseNetwork, TripletLoss, ContrastiveLoss
+from utils.dataset import TripletDataset, PairDataset, auto_detect_twin_pairs
 from config import (
     DATA_DIR, CHECKPOINT_DIR, IMG_SIZE, BATCH_SIZE, NUM_EPOCHS,
     LEARNING_RATE, TRIPLET_MARGIN, NORMALIZE_MEAN, NORMALIZE_STD, DEVICE,
 )
 
 # -----------------------------------------------------------------------
-# Transforms (same as before)
+# Transforms
 # -----------------------------------------------------------------------
 def get_train_transform():
     return transforms.Compose([
@@ -38,7 +37,7 @@ def get_val_transform():
     ])
 
 # -----------------------------------------------------------------------
-# Threshold calibration (using fixed validation pairs, same as before)
+# Threshold calibration (using the random validation loader)
 # -----------------------------------------------------------------------
 def calibrate_thresholds(model, val_loader, device):
     try:
@@ -86,7 +85,7 @@ def calibrate_thresholds(model, val_loader, device):
     return th_same, th_twin
 
 # -----------------------------------------------------------------------
-# Checkpoint helpers (same)
+# Checkpoint helpers
 # -----------------------------------------------------------------------
 def load_checkpoint(model, optimizer, checkpoint_dir, device):
     path = os.path.join(checkpoint_dir, "checkpoint.pth")
@@ -102,9 +101,9 @@ def load_checkpoint(model, optimizer, checkpoint_dir, device):
         except Exception:
             print("Warning: could not restore optimizer state")
     start_epoch = ckpt.get("epoch", -1) + 1
-    best_loss   = ckpt.get("best_loss", float("inf"))
-    th_same     = ckpt.get("threshold_same", 0.35)
-    th_twin     = ckpt.get("threshold_twin", 0.60)
+    best_loss = ckpt.get("best_loss", float("inf"))
+    th_same = ckpt.get("threshold_same", 0.35)
+    th_twin = ckpt.get("threshold_twin", 0.60)
     print(f"Resumed from epoch {start_epoch} | best_loss={best_loss:.4f} | same={th_same:.4f} twin={th_twin:.4f}")
     return start_epoch, best_loss, th_same, th_twin
 
@@ -119,7 +118,7 @@ def save_checkpoint(model, optimizer, epoch, loss, best_loss, th_same, th_twin, 
         "threshold_twin": th_twin,
     }
     torch.save(ckpt, os.path.join(checkpoint_dir, "checkpoint.pth"))
-    torch.save(ckpt, os.path.join(checkpoint_dir, "checkpoint2.pth"))
+    torch.save(ckpt, os.path.join(checkpoint_dir, "checkpoint2.pth"))   # backup
 
 def export_onnx(model, checkpoint_dir, device):
     try:
@@ -137,11 +136,8 @@ def export_onnx(model, checkpoint_dir, device):
         print(f"ONNX export failed: {e}")
 
 # -----------------------------------------------------------------------
-# Validation – using pairwise contrastive loss for monitoring
-# (still need a loss that works with pairs; we reuse ContrastiveLoss)
+# Validation (using PairDataset – random pairs)
 # -----------------------------------------------------------------------
-from models.siamese import ContrastiveLoss   # just for validation monitoring
-
 def validate(model, loader, criterion, device):
     model.eval()
     total = 0.0
@@ -154,42 +150,36 @@ def validate(model, loader, criterion, device):
     return total / len(loader)
 
 # -----------------------------------------------------------------------
-# Main training loop – using TripletLoss
+# Main training loop
 # -----------------------------------------------------------------------
 def train():
     os.makedirs(CHECKPOINT_DIR, exist_ok=True)
 
     train_dir = os.path.join(DATA_DIR, "train")
-    val_dir   = os.path.join(DATA_DIR, "val")
+    val_dir = os.path.join(DATA_DIR, "val")
 
-    # Optional: detect twin pairs (they will be used as negatives automatically by TripletDataset)
-    hard_negative_pairs = auto_detect_twin_pairs(train_dir)
+    # Auto-detect twin pairs (used in PairDataset for hard negatives)
+    hard_negative_pairs = auto_detect_twin_pairs(train_dir)   # also use for validation if needed
     if hard_negative_pairs:
-        print(f"✓ Detected {len(hard_negative_pairs)} twin pairs – they will appear as negatives in triplets.")
-    else:
-        print("No twin pairs detected – hard negative mining relies on random sampling.")
+        print(f"✓ Detected {len(hard_negative_pairs)} twin pairs – will be used as hard negatives.")
 
     train_transform = get_train_transform()
-    val_transform   = get_val_transform()
+    val_transform = get_val_transform()
 
-    # Training set: TripletDataset (requires classes with ≥2 images)
+    # Training: TripletDataset (no change)
     train_dataset = TripletDataset(train_dir, transform=train_transform)
     train_loader = DataLoader(train_dataset, batch_size=BATCH_SIZE, shuffle=True,
-                              num_workers=2, pin_memory=True)
+                              num_workers=2, pin_memory=True)   # reduced workers
 
-    # Validation set: fixed pairs (deterministic)
-    print("Generating fixed validation pairs...")
-    random.seed(42)
-    # Build pairs using the same logic as before (contrastive pairs)
-    # We'll use the same build_fixed_val_pairs from dataset.py
-    val_pairs = build_fixed_val_pairs(val_dir, num_pairs=2000, hard_negative_pairs=hard_negative_pairs)
-    val_dataset = FixedPairDataset(val_pairs, transform=val_transform)
+    # Validation: PairDataset with random pairs (original behaviour)
+    val_dataset = PairDataset(val_dir, transform=val_transform,
+                              hard_negative_pairs=hard_negative_pairs)   # pass twin pairs for hard negatives
     val_loader = DataLoader(val_dataset, batch_size=BATCH_SIZE, shuffle=False,
-                            num_workers=0, pin_memory=True)
+                            num_workers=0, pin_memory=True)   # workers=0 to avoid warnings
 
     model = SiameseNetwork().to(DEVICE)
-    criterion = TripletLoss(margin=TRIPLET_MARGIN)   # Triplet loss for training
-    val_criterion = ContrastiveLoss(margin=2.0)      # For monitoring validation loss (pair-based)
+    criterion = TripletLoss(margin=TRIPLET_MARGIN)
+    val_criterion = ContrastiveLoss(margin=2.0)   # for validation loss monitoring
     optimizer = torch.optim.Adam(model.parameters(), lr=LEARNING_RATE, weight_decay=1e-4)
     scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=NUM_EPOCHS)
 
@@ -239,8 +229,6 @@ def train():
                     th_same, th_twin, CHECKPOINT_DIR)
     export_onnx(model, CHECKPOINT_DIR, DEVICE)
     print("\n✅ Training complete!")
-    from utils.export_torch_tflite import export_to_tflite
-    export_to_tflite()   # this will create both ONNX and TFLite
 
 if __name__ == "__main__":
     train()
