@@ -14,7 +14,7 @@ try:
     print("✅ Imported SiameseNetwork from models.siamese")
 except:
     try:
-        from model import SiameseNetwork
+        from models.siamese import SiameseNetwork
         # Option B: If your model is defined elsewhere
         print("✅ Imported SiameseNetwork from model")
     except:

@@ -5,6 +5,7 @@ from tqdm import tqdm
 import os
 import numpy as np
 import sys
+from sklearn.metrics import roc_curve
 
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -37,61 +38,100 @@ def get_val_transform():
     ])
 
 # -----------------------------------------------------------------------
-# Threshold calibration (using the random validation loader)
+# 3‑label threshold calibration
 # -----------------------------------------------------------------------
-def calibrate_thresholds(model, val_loader, device):
-    try:
-        from sklearn.metrics import roc_curve
-        use_sklearn = True
-    except ImportError:
-        use_sklearn = False
-        print("! sklearn not installed – using fallback thresholds")
-
+def calibrate_threshold(model, val_loader, device):
+    """
+    Returns (th_same_twin, th_twin_diff)
+    """
     model.eval()
-    same_dist, diff_dist = [], []
+    same_dists = []
+    twin_dists = []
+    diff_dists = []
 
     with torch.no_grad():
         for img1, img2, label in tqdm(val_loader, desc="Calibrating thresholds"):
             img1, img2 = img1.to(device), img2.to(device)
             e1, e2 = model(img1, img2)
             if e1.size(0) != e2.size(0):
-                print(f"⚠️ Skipping batch – shape mismatch: {e1.size(0)} vs {e2.size(0)}")
+                print(f"⚠️ Skipping batch – shape mismatch")
                 continue
             dists = torch.nn.functional.pairwise_distance(e1, e2).cpu().numpy()
             labels_np = label.cpu().numpy()
             for d, l in zip(dists, labels_np):
-                (same_dist if l == 1 else diff_dist).append(float(d))
+                if l == 2:
+                    same_dists.append(float(d))
+                elif l == 1:
+                    twin_dists.append(float(d))
+                else:
+                    diff_dists.append(float(d))
 
-    same_dist = np.array(same_dist)
-    diff_dist = np.array(diff_dist)
+    same_dists = np.array(same_dists)
+    twin_dists = np.array(twin_dists)
+    diff_dists = np.array(diff_dists)
 
-    if use_sklearn and len(same_dist) > 0 and len(diff_dist) > 0:
-        all_dists = np.concatenate([same_dist, diff_dist])
-        all_labels = np.concatenate([np.ones(len(same_dist)), np.zeros(len(diff_dist))])
-        fpr, tpr, thresholds = roc_curve(all_labels, -all_dists)
-        j_scores = tpr - fpr
-        best_idx = np.argmax(j_scores)
-        th_same = float(-thresholds[best_idx])
-        th_twin = float((th_same + np.mean(diff_dist)) / 2)
+    print(f"Statistics:")
+    print(f"  SAME  → mean={np.mean(same_dists):.4f}  std={np.std(same_dists):.4f}")
+    print(f"  TWIN  → mean={np.mean(twin_dists):.4f}  std={np.std(twin_dists):.4f}")
+    print(f"  DIFF  → mean={np.mean(diff_dists):.4f}  std={np.std(diff_dists):.4f}")
+
+    # Separate same from others (twin + diff)
+    all_dists_1 = np.concatenate([same_dists, twin_dists, diff_dists])
+    all_labels_1 = np.concatenate([np.ones(len(same_dists)),
+                                   np.zeros(len(twin_dists) + len(diff_dists))])
+    if len(np.unique(all_labels_1)) == 2:
+        fpr, tpr, thresholds = roc_curve(all_labels_1, -all_dists_1)
+        j = tpr - fpr
+        best_idx = np.argmax(j)
+        th_same_twin = -thresholds[best_idx]
     else:
-        th_same = float(np.mean(same_dist) + np.std(same_dist) * 0.5) if len(same_dist) else 0.5
-        th_twin = float((np.mean(same_dist) + np.mean(diff_dist)) / 2) if len(same_dist) and len(diff_dist) else 1.0
+        th_same_twin = (np.mean(same_dists) + np.mean(np.concatenate([twin_dists, diff_dists]))) / 2
 
-    print(f"\n📊 Threshold calibration:"
-          f"\n  SAME  → mean={np.mean(same_dist):.4f}  std={np.std(same_dist):.4f}"
-          f"\n  DIFF  → mean={np.mean(diff_dist):.4f}  std={np.std(diff_dist):.4f}"
-          f"\n  th_same={th_same:.4f}  th_twin={th_twin:.4f}")
+    # Separate (same + twin) from diff
+    all_dists_2 = np.concatenate([same_dists, twin_dists, diff_dists])
+    all_labels_2 = np.concatenate([np.ones(len(same_dists) + len(twin_dists)),
+                                   np.zeros(len(diff_dists))])
+    if len(np.unique(all_labels_2)) == 2:
+        fpr, tpr, thresholds = roc_curve(all_labels_2, -all_dists_2)
+        j = tpr - fpr
+        best_idx = np.argmax(j)
+        th_twin_diff = -thresholds[best_idx]
+    else:
+        th_twin_diff = (np.mean(np.concatenate([same_dists, twin_dists])) + np.mean(diff_dists)) / 2
+
+    print(f"\n📊 3‑label calibration:")
+    print(f"  th_same_twin = {th_same_twin:.4f}  (distance < this → SAME)")
+    print(f"  th_twin_diff = {th_twin_diff:.4f}   (distance between → TWINS, > this → DIFFERENT)")
+
     model.train()
-    return th_same, th_twin
+    return th_same_twin, th_twin_diff
 
 # -----------------------------------------------------------------------
-# Checkpoint helpers
+# Validation (binary for monitoring)
+# -----------------------------------------------------------------------
+def validate(model, loader, device):
+    """Monitors contrastive loss: treat same (2) as positive, twins(1)/diff(0) as negative."""
+    model.eval()
+    total = 0.0
+    criterion = ContrastiveLoss(margin=2.0)
+    with torch.no_grad():
+        for img1, img2, label in loader:
+            img1, img2, label = img1.to(device), img2.to(device), label.to(device)
+            e1, e2 = model(img1, img2)
+            # Map label: 2 → 1 (positive), 0 or 1 → 0 (negative)
+            binary_label = (label == 2).float()
+            total += criterion(e1, e2, binary_label).item()
+    model.train()
+    return total / len(loader)
+
+# -----------------------------------------------------------------------
+# Checkpoint helpers (store two thresholds)
 # -----------------------------------------------------------------------
 def load_checkpoint(model, optimizer, checkpoint_dir, device):
     path = os.path.join(checkpoint_dir, "checkpoint.pth")
     if not os.path.exists(path):
         print("No checkpoint found – starting from scratch")
-        return 0, float("inf"), 0.35, 0.60
+        return 0, float("inf"), 0.35, 0.60   # fallback thresholds
 
     ckpt = torch.load(path, map_location=device)
     model.load_state_dict(ckpt["model_state_dict"])
@@ -102,23 +142,24 @@ def load_checkpoint(model, optimizer, checkpoint_dir, device):
             print("Warning: could not restore optimizer state")
     start_epoch = ckpt.get("epoch", -1) + 1
     best_loss = ckpt.get("best_loss", float("inf"))
-    th_same = ckpt.get("threshold_same", 0.35)
-    th_twin = ckpt.get("threshold_twin", 0.60)
-    print(f"Resumed from epoch {start_epoch} | best_loss={best_loss:.4f} | same={th_same:.4f} twin={th_twin:.4f}")
-    return start_epoch, best_loss, th_same, th_twin
+    th_same_twin = ckpt.get("threshold_same_twin", 0.35)
+    th_twin_diff = ckpt.get("threshold_twin_diff", 0.60)
+    print(f"Resumed from epoch {start_epoch} | best_loss={best_loss:.4f}")
+    print(f"  thresholds: same_twin={th_same_twin:.4f}, twin_diff={th_twin_diff:.4f}")
+    return start_epoch, best_loss, th_same_twin, th_twin_diff
 
-def save_checkpoint(model, optimizer, epoch, loss, best_loss, th_same, th_twin, checkpoint_dir):
+def save_checkpoint(model, optimizer, epoch, loss, best_loss, th_same_twin, th_twin_diff, checkpoint_dir):
     ckpt = {
         "epoch": epoch,
         "model_state_dict": model.state_dict(),
         "optimizer_state_dict": optimizer.state_dict(),
         "loss": loss,
         "best_loss": best_loss,
-        "threshold_same": th_same,
-        "threshold_twin": th_twin,
+        "threshold_same_twin": th_same_twin,
+        "threshold_twin_diff": th_twin_diff,
     }
     torch.save(ckpt, os.path.join(checkpoint_dir, "checkpoint.pth"))
-    torch.save(ckpt, os.path.join(checkpoint_dir, "checkpoint2.pth"))   # backup
+    torch.save(ckpt, os.path.join(checkpoint_dir, "checkpoint2.pth"))
 
 def export_onnx(model, checkpoint_dir, device):
     try:
@@ -136,20 +177,6 @@ def export_onnx(model, checkpoint_dir, device):
         print(f"ONNX export failed: {e}")
 
 # -----------------------------------------------------------------------
-# Validation (using PairDataset – random pairs)
-# -----------------------------------------------------------------------
-def validate(model, loader, criterion, device):
-    model.eval()
-    total = 0.0
-    with torch.no_grad():
-        for img1, img2, label in loader:
-            img1, img2, label = img1.to(device), img2.to(device), label.to(device)
-            e1, e2 = model(img1, img2)
-            total += criterion(e1, e2, label).item()
-    model.train()
-    return total / len(loader)
-
-# -----------------------------------------------------------------------
 # Main training loop
 # -----------------------------------------------------------------------
 def train():
@@ -158,32 +185,28 @@ def train():
     train_dir = os.path.join(DATA_DIR, "train")
     val_dir = os.path.join(DATA_DIR, "val")
 
-    # Auto-detect twin pairs (used in PairDataset for hard negatives)
-    hard_negative_pairs = auto_detect_twin_pairs(train_dir)   # also use for validation if needed
+    hard_negative_pairs = auto_detect_twin_pairs(train_dir)
     if hard_negative_pairs:
         print(f"✓ Detected {len(hard_negative_pairs)} twin pairs – will be used as hard negatives.")
 
     train_transform = get_train_transform()
     val_transform = get_val_transform()
 
-    # Training: TripletDataset (no change)
     train_dataset = TripletDataset(train_dir, transform=train_transform)
     train_loader = DataLoader(train_dataset, batch_size=BATCH_SIZE, shuffle=True,
-                              num_workers=2, pin_memory=True)   # reduced workers
+                              num_workers=2, pin_memory=True)
 
-    # Validation: PairDataset with random pairs (original behaviour)
     val_dataset = PairDataset(val_dir, transform=val_transform,
-                              hard_negative_pairs=hard_negative_pairs)   # pass twin pairs for hard negatives
+                              hard_negative_pairs=hard_negative_pairs)
     val_loader = DataLoader(val_dataset, batch_size=BATCH_SIZE, shuffle=False,
-                            num_workers=0, pin_memory=True)   # workers=0 to avoid warnings
+                            num_workers=0, pin_memory=True)
 
     model = SiameseNetwork().to(DEVICE)
     criterion = TripletLoss(margin=TRIPLET_MARGIN)
-    val_criterion = ContrastiveLoss(margin=2.0)   # for validation loss monitoring
     optimizer = torch.optim.Adam(model.parameters(), lr=LEARNING_RATE, weight_decay=1e-4)
     scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=NUM_EPOCHS)
 
-    start_epoch, best_loss, th_same, th_twin = load_checkpoint(
+    start_epoch, best_loss, th_same_twin, th_twin_diff = load_checkpoint(
         model, optimizer, CHECKPOINT_DIR, DEVICE
     )
 
@@ -208,25 +231,24 @@ def train():
             epoch_loss += loss.item()
 
         avg_loss = epoch_loss / len(train_loader)
-        val_loss = validate(model, val_loader, val_criterion, DEVICE)
+        val_loss = validate(model, val_loader, DEVICE)
         scheduler.step()
 
         print(f"Epoch {epoch+1:03d} | train_loss={avg_loss:.4f} | val_loss={val_loss:.4f} | lr={scheduler.get_last_lr()[0]:.2e}")
 
-        # Recalibrate thresholds every 5 epochs
         if (epoch + 1) % 5 == 0:
-            th_same, th_twin = calibrate_thresholds(model, val_loader, DEVICE)
+            th_same_twin, th_twin_diff = calibrate_threshold(model, val_loader, DEVICE)
 
         if avg_loss < best_loss:
             best_loss = avg_loss
             save_checkpoint(model, optimizer, epoch, avg_loss, best_loss,
-                            th_same, th_twin, CHECKPOINT_DIR)
+                            th_same_twin, th_twin_diff, CHECKPOINT_DIR)
             print(f"  ✓ New best model saved (loss={best_loss:.4f})")
 
     # Final calibration and export
-    th_same, th_twin = calibrate_thresholds(model, val_loader, DEVICE)
+    th_same_twin, th_twin_diff = calibrate_threshold(model, val_loader, DEVICE)
     save_checkpoint(model, optimizer, NUM_EPOCHS - 1, best_loss, best_loss,
-                    th_same, th_twin, CHECKPOINT_DIR)
+                    th_same_twin, th_twin_diff, CHECKPOINT_DIR)
     export_onnx(model, CHECKPOINT_DIR, DEVICE)
     print("\n✅ Training complete!")
 
