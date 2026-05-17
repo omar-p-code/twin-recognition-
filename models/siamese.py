@@ -28,7 +28,7 @@ class SiameseNetwork(nn.Module):
             nn.Linear(2048, 512),
             nn.BatchNorm1d(512),
             nn.ReLU(inplace=True),
-            # nn.Dropout(0.3),   # removed for TFLite compatibility
+            nn.Dropout(0.3),   # removed for TFLite compatibility
             nn.Linear(512, EMBEDDING_DIM),
         )
 
