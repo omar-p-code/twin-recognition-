@@ -175,6 +175,7 @@ def save_checkpoint(model, optimizer, epoch, loss, best_loss, th_same_twin, th_t
         "threshold_same_twin": th_same_twin,
         "threshold_twin_diff": th_twin_diff,
     }
+    
     torch.save(ckpt, os.path.join(checkpoint_dir, "checkpoint.pth"))
     torch.save(ckpt2, os.path.join(checkpoint_dir, "checkpoint2.pth"))
 

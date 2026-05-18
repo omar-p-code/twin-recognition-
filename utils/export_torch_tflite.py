@@ -1,61 +1,16 @@
-import torch
-import os
-import sys
+import tensorflow as tf
 
-sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+converter = tf.lite.TFLiteConverter.from_saved_model('../output_folder/model_fixed_float16.tflite')
 
-from models.siamese import SiameseNetwork
-from config import CHECKPOINT_DIR, IMG_SIZE, DEVICE
+# Only TFLite built‑in ops – no flex, no custom
+converter.target_spec.supported_ops = [tf.lite.OpsSet.TFLITE_BUILTINS]
 
-def export_to_tflite():
-    # 1. Load model
-    model = SiameseNetwork().to(DEVICE)
-    checkpoint_path = os.path.join(CHECKPOINT_DIR, "checkpoint.pth")
-    if not os.path.exists(checkpoint_path):
-        print(f"❌ Checkpoint not found at {checkpoint_path}")
-        return
+# Dynamic range quantization (no data needed, ~4× smaller)
+converter.optimizations = [tf.lite.Optimize.DEFAULT]
 
-    checkpoint = torch.load(checkpoint_path, map_location=DEVICE)
-    model.load_state_dict(checkpoint["model_state_dict"])
-    model.eval()
-    print("✅ Model loaded and set to eval mode")
+tflite_model = converter.convert()
 
-    # 2. Export to ONNX
-    onnx_path = os.path.join(CHECKPOINT_DIR, "model.onnx")
-    dummy_input = torch.randn(1, 3, IMG_SIZE, IMG_SIZE).to(DEVICE)
+with open('../output_folder/model_builtin.tflite', 'wb') as f:
+    f.write(tflite_model)
 
-    torch.onnx.export(
-        model,
-        (dummy_input, dummy_input),
-        onnx_path,
-        input_names=["img1", "img2"],
-        output_names=["emb1", "emb2"],
-        opset_version=17,
-        do_constant_folding=True,
-        dynamic_axes={
-            "img1": {0: "batch_size"},
-            "img2": {0: "batch_size"},
-            "emb1": {0: "batch_size"},
-            "emb2": {0: "batch_size"}
-        }
-    )
-    print(f"✅ ONNX model saved to {onnx_path}")
-
-    # 3. Convert ONNX to TFLite using only essential parameters
-    from onnx2tf import convert
-
-    output_dir = os.path.join(CHECKPOINT_DIR, "tflite_model")
-    os.makedirs(output_dir, exist_ok=True)
-
-    # Use minimal, widely supported parameters
-    convert(
-        input_onnx_file_path=onnx_path,
-        output_folder_path=output_dir,
-        output_integer_quantized_tflite=True,   # enable integer quantization
-        not_use_onnxsim=True,
-        keep_input_and_output_names=True,
-    )
-    print(f"✅ TFLite models saved to {output_dir}")
-
-if __name__ == "__main__":
-    export_to_tflite()
+print("✅ Clean TFLite model saved.")
