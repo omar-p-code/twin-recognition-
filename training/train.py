@@ -17,15 +17,13 @@ from config import (
 )
 
 # -----------------------------------------------------------------------
-# Transforms
+# Transforms (milder for better identity preservation)
 # -----------------------------------------------------------------------
 def get_train_transform():
     return transforms.Compose([
-        transforms.Resize((IMG_SIZE + 20, IMG_SIZE + 20)),
-        transforms.RandomCrop(IMG_SIZE),
+        transforms.Resize((IMG_SIZE, IMG_SIZE)),          # direct resize, no extra crop
         transforms.RandomHorizontalFlip(),
-        transforms.ColorJitter(brightness=0.3, contrast=0.3, saturation=0.2, hue=0.05),
-        transforms.RandomGrayscale(p=0.05),
+        transforms.ColorJitter(brightness=0.2, contrast=0.2),  # milder
         transforms.ToTensor(),
         transforms.Normalize(NORMALIZE_MEAN, NORMALIZE_STD),
     ])
@@ -37,89 +35,118 @@ def get_val_transform():
         transforms.Normalize(NORMALIZE_MEAN, NORMALIZE_STD),
     ])
 
+
 # -----------------------------------------------------------------------
 # 3‑label threshold calibration
 # -----------------------------------------------------------------------
-def calibrate_threshold(model, val_loader, device, percentile_low=5, percentile_high=95):
+def calibrate_threshold(model, val_loader, device, percentile_low=5, percentile_high=95, metric='cosine'):
     """
     Compute two thresholds (same_twin, twin_diff) using percentiles.
+    metric: 'euclidean' (distance) or 'cosine' (similarity)
     Returns (th_same_twin, th_twin_diff, overlap_warning)
     """
     model.eval()
-    same_dists = []
-    twin_dists = []
-    diff_dists = []
+    same_vals = []
+    twin_vals = []
+    diff_vals = []
 
     with torch.no_grad():
-        for img1, img2, label in tqdm(val_loader, desc="Calibrating thresholds"):
+        for img1, img2, label in tqdm(val_loader, desc=f"Calibrating thresholds ({metric})"):
             img1, img2 = img1.to(device), img2.to(device)
             e1, e2 = model(img1, img2)
 
-            # Ensure L2 normalisation (if model doesn't already do it)
-            # This is critical for distance stability
             e1 = torch.nn.functional.normalize(e1, p=2, dim=1)
             e2 = torch.nn.functional.normalize(e2, p=2, dim=1)
 
-            dists = torch.nn.functional.pairwise_distance(e1, e2).cpu().numpy()
+            if metric == 'euclidean':
+                vals = torch.nn.functional.pairwise_distance(e1, e2).cpu().numpy()
+            else:  # cosine
+                vals = torch.sum(e1 * e2, dim=1).cpu().numpy()   # similarity
+
             labels_np = label.cpu().numpy()
-            for d, l in zip(dists, labels_np):
+            for v, l in zip(vals, labels_np):
                 if l == 2:
-                    same_dists.append(d)
+                    same_vals.append(v)
                 elif l == 1:
-                    twin_dists.append(d)
+                    twin_vals.append(v)
                 else:
-                    diff_dists.append(d)
+                    diff_vals.append(v)
 
-    same_dists = np.array(same_dists)
-    twin_dists = np.array(twin_dists)
-    diff_dists = np.array(diff_dists)
+    same_vals = np.array(same_vals)
+    twin_vals = np.array(twin_vals)
+    diff_vals = np.array(diff_vals)
 
-    # Statistics
     def stats(arr):
         return f"mean={np.mean(arr):.4f} std={np.std(arr):.4f} p5={np.percentile(arr,5):.4f} p95={np.percentile(arr,95):.4f}"
 
-    print("\n📊 Distance distributions:")
-    print(f"  SAME:  {stats(same_dists)}")
-    print(f"  TWIN:  {stats(twin_dists)}")
-    print(f"  DIFF:  {stats(diff_dists)}")
+    unit = "distance" if metric == 'euclidean' else "similarity"
+    print(f"\n📊 {unit.capitalize()} distributions ({metric}):")
+    print(f"  SAME:  {stats(same_vals)}")
+    print(f"  TWIN:  {stats(twin_vals)}")
+    print(f"  DIFF:  {stats(diff_vals)}")
 
-    # Sanity check: same and diff must be separable
-    overlap_same_diff = np.max(same_dists) >= np.min(diff_dists)
-    if overlap_same_diff:
-        print("\n⚠️ WARNING: same and diff distributions overlap!")
-        print("   Model has not learned proper separation. Thresholds will be unreliable.")
-    else:
+    # Sanity check (different for distance vs similarity)
+    if metric == 'euclidean':
+        overlap_same_diff = np.max(same_vals) >= np.min(diff_vals)
+        if overlap_same_diff:
+            print("\n⚠️ WARNING: same and diff distance distributions overlap!")
+    else:   # cosine
+        overlap_same_diff = np.min(same_vals) <= np.max(diff_vals)
+        if overlap_same_diff:
+            print("\n⚠️ WARNING: same and diff similarity distributions overlap!")
+
+    if not overlap_same_diff:
         print("\n✅ Good separation: same and diff are separated.")
 
-    # Compute robust thresholds using percentiles
-    # th_same_twin: upper bound of same (p95) + lower bound of twin (p5)
-    if len(twin_dists) > 0:
-        th_same_twin = (np.percentile(same_dists, percentile_high) + np.percentile(twin_dists, percentile_low)) / 2
-        th_twin_diff = (np.percentile(twin_dists, percentile_high) + np.percentile(diff_dists, percentile_low)) / 2
+    # Compute thresholds
+    if len(twin_vals) > 0:
+        if metric == 'euclidean':
+            # lower distance = same
+            th_same_twin = (np.percentile(same_vals, percentile_high) + np.percentile(twin_vals, percentile_low)) / 2
+            th_twin_diff = (np.percentile(twin_vals, percentile_high) + np.percentile(diff_vals, percentile_low)) / 2
+        else:   # cosine
+            # higher similarity = same
+            th_same_twin = (np.percentile(same_vals, percentile_low) + np.percentile(twin_vals, percentile_high)) / 2
+            th_twin_diff = (np.percentile(twin_vals, percentile_low) + np.percentile(diff_vals, percentile_high)) / 2
     else:
-        # Fallback if no twin samples (should not happen)
-        th_same_twin = np.percentile(same_dists, percentile_high) + 0.1
-        th_twin_diff = (np.percentile(same_dists, percentile_high) + np.percentile(diff_dists, percentile_low)) / 2
+        if metric == 'euclidean':
+            th_same_twin = np.percentile(same_vals, percentile_high) + 0.1
+            th_twin_diff = (np.percentile(same_vals, percentile_high) + np.percentile(diff_vals, percentile_low)) / 2
+        else:
+            th_same_twin = np.percentile(same_vals, percentile_low) - 0.1
+            th_twin_diff = (np.percentile(twin_vals, percentile_low) + np.percentile(diff_vals, percentile_high)) / 2
 
-    # Ensure logical order: th_same_twin < th_twin_diff
-    if th_same_twin >= th_twin_diff:
-        print("⚠️ Warning: thresholds are inverted. Adjusting.")
-        mid = (th_same_twin + th_twin_diff) / 2
-        th_same_twin = mid - 0.1
-        th_twin_diff = mid + 0.1
+    # Ensure logical order
+    if metric == 'euclidean':
+        if th_same_twin >= th_twin_diff:
+            print("⚠️ Warning: distance thresholds inverted. Adjusting.")
+            mid = (th_same_twin + th_twin_diff) / 2
+            th_same_twin = mid - 0.1
+            th_twin_diff = mid + 0.1
+    else:   # cosine: th_same_twin must be > th_twin_diff
+        if th_same_twin <= th_twin_diff:
+            print("⚠️ Warning: similarity thresholds inverted. Adjusting.")
+            mid = (th_same_twin + th_twin_diff) / 2
+            th_same_twin = mid + 0.1
+            th_twin_diff = mid - 0.1
 
-    print(f"\n📊 Final thresholds (percentile method):")
-    print(f"  th_same_twin = {th_same_twin:.4f}  (distance < this → SAME PERSON)")
-    print(f"  th_twin_diff = {th_twin_diff:.4f}   (distance between → TWINS, > this → DIFFERENT)")
+    if metric == 'euclidean':
+        print(f"\n📊 Final thresholds (percentile method):")
+        print(f"  th_same_twin = {th_same_twin:.4f}  (distance < this → SAME PERSON)")
+        print(f"  th_twin_diff = {th_twin_diff:.4f}   (distance between → TWINS, > this → DIFFERENT)")
+    else:
+        print(f"\n📊 Final cosine similarity thresholds:")
+        print(f"  th_same_twin = {th_same_twin:.4f}  (similarity > this → SAME PERSON)")
+        print(f"  th_twin_diff = {th_twin_diff:.4f}   (similarity between → TWINS, < this → DIFFERENT)")
 
     model.train()
     return th_same_twin, th_twin_diff, overlap_same_diff
 
 # -----------------------------------------------------------------------
-# Validation (binary for monitoring)
+# Validation (contrastive loss monitoring)
 # -----------------------------------------------------------------------
 def validate(model, loader, device):
-    """Monitors contrastive loss: treat same (2) as positive, twins(1)/diff(0) as negative."""
+    """Contrastive loss: same (2) → 1, twins(1)/diff(0) → 0."""
     model.eval()
     total = 0.0
     criterion = ContrastiveLoss(margin=2.0)
@@ -127,8 +154,7 @@ def validate(model, loader, device):
         for img1, img2, label in loader:
             img1, img2, label = img1.to(device), img2.to(device), label.to(device)
             e1, e2 = model(img1, img2)
-            # Map label: 2 → 1 (positive), 0 or 1 → 0 (negative)
-            binary_label = (label == 2).float()
+            binary_label = (label == 2).float()   # 1 if same, 0 otherwise
             total += criterion(e1, e2, binary_label).item()
     model.train()
     return total / len(loader)
@@ -194,6 +220,7 @@ def export_onnx(model, checkpoint_dir, device):
     except Exception as e:
         print(f"ONNX export failed: {e}")
 
+
 # -----------------------------------------------------------------------
 # Main training loop
 # -----------------------------------------------------------------------
@@ -203,6 +230,7 @@ def train():
     train_dir = os.path.join(DATA_DIR, "train")
     val_dir = os.path.join(DATA_DIR, "val")
 
+    # Detect twin pairs from training folder (used for hard negatives)
     hard_negative_pairs = auto_detect_twin_pairs(train_dir)
     if hard_negative_pairs:
         print(f"✓ Detected {len(hard_negative_pairs)} twin pairs – will be used as hard negatives.")
@@ -210,12 +238,14 @@ def train():
     train_transform = get_train_transform()
     val_transform = get_val_transform()
 
-    train_dataset = TripletDataset(train_dir, transform=train_transform)
+    # ───── Build datasets ─────
+    train_dataset = TripletDataset(train_dir, transform=train_transform,
+                                hard_twin_pairs=hard_negative_pairs)   # ← pass twins
     train_loader = DataLoader(train_dataset, batch_size=BATCH_SIZE, shuffle=True,
-                              num_workers=2, pin_memory=True)
+                            num_workers=2, pin_memory=True)
 
     val_dataset = PairDataset(val_dir, transform=val_transform,
-                              hard_negative_pairs=hard_negative_pairs)
+                            hard_negative_pairs=hard_negative_pairs)     # already supports twins
     val_loader = DataLoader(val_dataset, batch_size=BATCH_SIZE, shuffle=False,
                             num_workers=0, pin_memory=True)
 
@@ -254,8 +284,9 @@ def train():
 
         print(f"Epoch {epoch+1:03d} | train_loss={avg_loss:.4f} | val_loss={val_loss:.4f} | lr={scheduler.get_last_lr()[0]:.2e}")
 
+        # Calibrate every 2 epochs (using cosine similarity now – your updated function)
         if (epoch + 1) % 2 == 0:
-            th_same_twin, th_twin_diff, overloap = calibrate_threshold(model, val_loader, DEVICE)
+            th_same_twin, th_twin_diff, overlap = calibrate_threshold(model, val_loader, DEVICE, metric='cosine')
 
         if avg_loss < best_loss:
             best_loss = avg_loss
@@ -264,7 +295,7 @@ def train():
             print(f"  ✓ New best model saved (loss={best_loss:.4f})")
 
     # Final calibration and export
-    th_same_twin, th_twin_diff, overloap = calibrate_threshold(model, val_loader, DEVICE)
+    th_same_twin, th_twin_diff, overlap = calibrate_threshold(model, val_loader, DEVICE, metric='cosine')
     save_checkpoint(model, optimizer, NUM_EPOCHS - 1, best_loss, best_loss,
                     th_same_twin, th_twin_diff, CHECKPOINT_DIR)
     export_onnx(model, CHECKPOINT_DIR, DEVICE)

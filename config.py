@@ -11,7 +11,7 @@ os.makedirs(CHECKPOINT_DIR, exist_ok=True)
 # =========================
 # Image
 # =========================
-IMG_SIZE = 224  # upgraded from 128 — preserves more facial detail
+IMG_SIZE = 224
 
 NORMALIZE_MEAN = [0.485, 0.456, 0.406]
 NORMALIZE_STD  = [0.229, 0.224, 0.225]
@@ -20,11 +20,11 @@ NORMALIZE_STD  = [0.229, 0.224, 0.225]
 # Training
 # =========================
 BATCH_SIZE     = 32
-NUM_EPOCHS     = 10
-EMBEDDING_DIM  = 256      # upgraded from 64 — richer face representation
+NUM_EPOCHS     = 20             # ← increased to 20
+EMBEDDING_DIM  = 256
 LEARNING_RATE  = 1e-4
-MARGIN         = 2.0      # contrastive loss margin (kept for compatibility)
-TRIPLET_MARGIN = 0.5      # margin for triplet loss
+MARGIN         = 2.0            # contrastive loss margin (still here for reference)
+TRIPLET_MARGIN = 0.8            # ← increased from 0.5
 SAME_LABEL     = 1
 DIFF_LABEL     = 0
 

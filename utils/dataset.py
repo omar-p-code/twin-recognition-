@@ -83,7 +83,6 @@ class PairDataset(Dataset):
                 elif r < 0.66:
                     # Twin pair (label = 1)
                     if not self.hard_negative_pairs:
-                        # fallback to random different classes
                         cls1, cls2 = random.sample(self.all_classes, 2)
                     else:
                         cls1, cls2 = random.choice(self.hard_negative_pairs)
@@ -98,7 +97,7 @@ class PairDataset(Dataset):
                     cls1, cls2 = random.sample(self.all_classes, 2)
                     while cls1 == cls2:
                         cls2 = random.choice(self.all_classes)
-                    # Avoid accidentally picking a twin pair
+                    # Avoid twin pairs
                     while (cls1, cls2) in self.hard_negative_pairs or (cls2, cls1) in self.hard_negative_pairs:
                         cls2 = random.choice(self.all_classes)
                     img1_path = random.choice(self.class_to_images[cls1])
@@ -112,19 +111,17 @@ class PairDataset(Dataset):
                     img2 = self.transform(img2)
                 return img1, img2, float(label)
 
-            except FileNotFoundError as e:
-                print(f"⚠️ Skipping missing file: {e.filename}")
-                continue
-            except Exception as e:
-                print(f"⚠️ Skipping problematic pair: {e}")
+            except (FileNotFoundError, Exception) as e:
+                print(f"⚠️ Skipping pair due to: {e}")
                 continue
 
 
 class TripletDataset(Dataset):
-    """Triplet dataset for training – with retry on missing files."""
-    def __init__(self, root_dir, transform=None):
+    """Triplet dataset for training – with optional twin hard negatives."""
+    def __init__(self, root_dir, transform=None, hard_twin_pairs=None):
         self.root_dir = root_dir
         self.transform = transform
+        self.hard_twin_pairs = hard_twin_pairs or []   # list of (clsA, clsB)
 
         self.class_to_images = {}
         for cls in os.listdir(root_dir):
@@ -139,11 +136,20 @@ class TripletDataset(Dataset):
         self.valid_classes = [c for c in self.class_to_images if len(self.class_to_images[c]) >= 2]
         self.all_classes = list(self.class_to_images.keys())
 
+        # Filter twin pairs to those that actually exist in the dataset
+        if self.hard_twin_pairs:
+            self.hard_twin_pairs = [
+                (c1, c2) for (c1, c2) in self.hard_twin_pairs
+                if c1 in self.class_to_images and c2 in self.class_to_images
+            ]
+
         if len(self.valid_classes) < 2:
             raise ValueError(
                 f"TripletDataset needs at least 2 identities with ≥2 images each. "
                 f"Found {len(self.valid_classes)} valid identities in {root_dir}."
             )
+        print(f"[TripletDataset] {len(self.valid_classes)} valid classes, "
+              f"{len(self.hard_twin_pairs)} twin pairs for hard negatives")
 
     def __len__(self):
         return 20000
@@ -151,10 +157,25 @@ class TripletDataset(Dataset):
     def __getitem__(self, idx):
         while True:
             try:
-                anchor_cls = random.choice(self.valid_classes)
+                # Decide whether to use a twin as negative (30% chance)
+                use_twin = self.hard_twin_pairs and random.random() < 0.3
+
+                if use_twin:
+                    # Anchor and positive from twin_A, negative from twin_B
+                    anchor_cls, twin_cls = random.choice(self.hard_twin_pairs)
+                else:
+                    # Normal random negative
+                    anchor_cls = random.choice(self.valid_classes)
+                    negative_cls = random.choice([c for c in self.all_classes if c != anchor_cls])
+                    twin_cls = negative_cls  # not used
+
+                # Pick anchor & positive from anchor_cls
                 anchor_path, positive_path = random.sample(self.class_to_images[anchor_cls], 2)
-                negative_cls = random.choice([c for c in self.all_classes if c != anchor_cls])
-                negative_path = random.choice(self.class_to_images[negative_cls])
+
+                if use_twin:
+                    negative_path = random.choice(self.class_to_images[twin_cls])
+                else:
+                    negative_path = random.choice(self.class_to_images[negative_cls])
 
                 anchor = Image.open(anchor_path).convert("RGB")
                 positive = Image.open(positive_path).convert("RGB")
@@ -167,11 +188,8 @@ class TripletDataset(Dataset):
 
                 return anchor, positive, negative
 
-            except FileNotFoundError as e:
-                print(f"⚠️ Skipping missing file: {e.filename}")
-                continue
-            except Exception as e:
-                print(f"⚠️ Skipping problematic triplet: {e}")
+            except (FileNotFoundError, Exception) as e:
+                print(f"⚠️ Skipping triplet: {e}")
                 continue
 
 
