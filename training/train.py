@@ -224,20 +224,21 @@ def export_onnx(model, checkpoint_dir, device):
 # -----------------------------------------------------------------------
 # Main training loop
 # -----------------------------------------------------------------------
+from itertools import cycle
+
 def train():
     os.makedirs(CHECKPOINT_DIR, exist_ok=True)
 
     train_dir = os.path.join(DATA_DIR, "train")
     val_dir = os.path.join(DATA_DIR, "val")
 
-    # Detect twin pairs
     hard_negative_pairs = auto_detect_twin_pairs(train_dir)
     print(f"✓ Detected {len(hard_negative_pairs)} twin pairs – will use as hard negatives.")
 
     train_transform = get_train_transform()
     val_transform = get_val_transform()
 
-    # ─── Triplet dataset (identities with ≥2 images) ──────────────
+    # Triplet dataset (identities with ≥2 images)
     triplet_dataset = TripletDataset(
         train_dir,
         transform=train_transform,
@@ -246,12 +247,12 @@ def train():
     triplet_loader = DataLoader(triplet_dataset, batch_size=BATCH_SIZE, shuffle=True,
                                 num_workers=2, pin_memory=True)
 
-    # ─── Twin pair dataset (contrastive loss on twins) ───────────
+    # Twin pair dataset (contrastive loss)
     twin_dataset = TwinPairDataset(train_dir, hard_negative_pairs, transform=train_transform)
     twin_loader = DataLoader(twin_dataset, batch_size=BATCH_SIZE, shuffle=True,
-                             num_workers=0, pin_memory=True)
+                             num_workers=0, pin_memory=True) if len(twin_dataset) > 0 else None
 
-    # ─── Validation dataset ─────────────────────────────────────
+    # Validation dataset
     val_dataset = PairDataset(val_dir, transform=val_transform,
                               hard_negative_pairs=hard_negative_pairs)
     val_loader = DataLoader(val_dataset, batch_size=BATCH_SIZE, shuffle=False,
@@ -269,20 +270,22 @@ def train():
     )
 
     print(f"\n🚀 Hybrid training on {DEVICE} | epochs={NUM_EPOCHS}")
-    print(f"   Triplet + Contrastive (twins) | margin={TRIPLET_MARGIN}\n")
+    if twin_loader:
+        print(f"   Triplet + Contrastive (twins) | margin={TRIPLET_MARGIN}")
+    else:
+        print(f"   Triplet only (no twin pairs found) | margin={TRIPLET_MARGIN}")
+
+    # Infinite iterator for twin loader
+    twin_iter = cycle(twin_loader) if twin_loader else None
 
     for epoch in range(start_epoch, NUM_EPOCHS):
         model.train()
         epoch_loss = 0.0
-        n_batches = min(len(triplet_loader), len(twin_loader))
+        steps = len(triplet_loader)
 
-        # Zip the two loaders together (they will cycle)
-        for (anchor, positive, negative), (img1, img2, label) in zip(
-            tqdm(triplet_loader, desc=f"Epoch {epoch+1}/{NUM_EPOCHS}"),
-            twin_loader
-        ):
+        progress_bar = tqdm(triplet_loader, desc=f"Epoch {epoch+1}/{NUM_EPOCHS}", total=steps)
+        for batch_idx, (anchor, positive, negative) in enumerate(progress_bar):
             anchor, positive, negative = anchor.to(DEVICE), positive.to(DEVICE), negative.to(DEVICE)
-            img1, img2, label = img1.to(DEVICE), img2.to(DEVICE), label.to(DEVICE)
 
             # Triplet loss
             emb_a = model.forward_once(anchor)
@@ -290,12 +293,20 @@ def train():
             emb_n = model.forward_once(negative)
             loss_triplet = criterion_triplet(emb_a, emb_p, emb_n)
 
-            # Contrastive loss on twin pairs (label=0 → push apart)
-            emb1 = model.forward_once(img1)
-            emb2 = model.forward_once(img2)
-            loss_contrastive = criterion_contrastive(emb1, emb2, label)
+            # Contrastive loss on twin pairs (if available)
+            if twin_iter:
+                try:
+                    img1, img2, label = next(twin_iter)
+                    img1, img2, label = img1.to(DEVICE), img2.to(DEVICE), label.to(DEVICE)
+                    emb1 = model.forward_once(img1)
+                    emb2 = model.forward_once(img2)
+                    loss_contrastive = criterion_contrastive(emb1, emb2, label)
+                except StopIteration:
+                    loss_contrastive = 0.0
+            else:
+                loss_contrastive = 0.0
 
-            loss = loss_triplet + 0.5 * loss_contrastive   # weight twin loss
+            loss = loss_triplet + 0.5 * loss_contrastive
 
             optimizer.zero_grad()
             loss.backward()
@@ -303,7 +314,10 @@ def train():
             optimizer.step()
             epoch_loss += loss.item()
 
-        avg_loss = epoch_loss / n_batches
+            # Update progress bar
+            progress_bar.set_postfix(loss=loss.item(), triplet=loss_triplet.item(), twin=loss_contrastive.item() if twin_iter else 0.0)
+
+        avg_loss = epoch_loss / steps
         val_loss = validate(model, val_loader, DEVICE)
         scheduler.step()
 
