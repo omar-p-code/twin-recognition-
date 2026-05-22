@@ -1,21 +1,18 @@
 import os
 import random
 from PIL import Image
+import torch
 from torch.utils.data import Dataset
 
+# ──────────────────────────────────────────────────────────────────────
+# 1. PairDataset (unchanged, for validation)
+# ──────────────────────────────────────────────────────────────────────
 class PairDataset(Dataset):
-    """
-    Random pair dataset for validation.
-    label = 2 → same person
-    label = 1 → twin pair (hard negative)
-    label = 0 → different people
-    """
     def __init__(self, root_dir, transform=None, hard_negative_pairs=None):
         self.root_dir = root_dir
         self.transform = transform
         self.hard_negative_pairs = hard_negative_pairs or []
 
-        # Build class -> list of image paths
         self.class_to_images = {}
         for cls in os.listdir(root_dir):
             cls_path = os.path.join(root_dir, cls)
@@ -43,7 +40,6 @@ class PairDataset(Dataset):
             if 'A' in group and 'B' in group:
                 auto_twin_pairs.append((group['A'], group['B']))
 
-        # Merge and keep only pairs that exist in this dataset
         if self.hard_negative_pairs:
             self.hard_negative_pairs.extend(auto_twin_pairs)
         else:
@@ -62,7 +58,6 @@ class PairDataset(Dataset):
             try:
                 r = random.random()
                 if r < 0.33:
-                    # Same person (label = 2)
                     if not self.valid_classes:
                         cls = random.choice(self.all_classes)
                         img_path = random.choice(self.class_to_images[cls])
@@ -81,7 +76,6 @@ class PairDataset(Dataset):
                     label = 2
 
                 elif r < 0.66:
-                    # Twin pair (label = 1)
                     if not self.hard_negative_pairs:
                         cls1, cls2 = random.sample(self.all_classes, 2)
                     else:
@@ -93,11 +87,9 @@ class PairDataset(Dataset):
                     label = 1
 
                 else:
-                    # Different people (label = 0)
                     cls1, cls2 = random.sample(self.all_classes, 2)
                     while cls1 == cls2:
                         cls2 = random.choice(self.all_classes)
-                    # Avoid twin pairs
                     while (cls1, cls2) in self.hard_negative_pairs or (cls2, cls1) in self.hard_negative_pairs:
                         cls2 = random.choice(self.all_classes)
                     img1_path = random.choice(self.class_to_images[cls1])
@@ -116,85 +108,115 @@ class PairDataset(Dataset):
                 continue
 
 
+# ──────────────────────────────────────────────────────────────────────
+# 2. TripletDataset (only uses classes with ≥2 images as anchor)
+# ──────────────────────────────────────────────────────────────────────
 class TripletDataset(Dataset):
-    """Triplet dataset for training – with optional twin hard negatives."""
     def __init__(self, root_dir, transform=None, hard_twin_pairs=None):
         self.root_dir = root_dir
         self.transform = transform
-        self.hard_twin_pairs = hard_twin_pairs or []   # list of (clsA, clsB)
 
         self.class_to_images = {}
         for cls in os.listdir(root_dir):
             cls_path = os.path.join(root_dir, cls)
-            if not os.path.isdir(cls_path):
-                continue
+            if not os.path.isdir(cls_path): continue
             images = [os.path.join(cls_path, f) for f in os.listdir(cls_path)
                       if f.lower().endswith((".jpg", ".jpeg", ".png"))]
             if images:
                 self.class_to_images[cls] = images
 
-        self.valid_classes = [c for c in self.class_to_images if len(self.class_to_images[c]) >= 2]
+        # Only classes with ≥2 images can serve as anchor (for anchor & positive)
+        self.anchor_classes = [c for c in self.class_to_images if len(self.class_to_images[c]) >= 2]
+        if not self.anchor_classes:
+            raise ValueError("Need at least one class with ≥2 images for anchor.")
+
         self.all_classes = list(self.class_to_images.keys())
 
-        # Filter twin pairs to those that actually exist in the dataset
-        if self.hard_twin_pairs:
-            self.hard_twin_pairs = [
-                (c1, c2) for (c1, c2) in self.hard_twin_pairs
-                if c1 in self.class_to_images and c2 in self.class_to_images
-            ]
+        # Keep twin pairs (both folders may have 1 image – that's fine, they can be negatives)
+        self.hard_twin_pairs = hard_twin_pairs or []
+        # Filter to existing folders
+        self.hard_twin_pairs = [(a,b) for (a,b) in self.hard_twin_pairs
+                                if a in self.class_to_images and b in self.class_to_images]
 
-        if len(self.valid_classes) < 2:
-            raise ValueError(
-                f"TripletDataset needs at least 2 identities with ≥2 images each. "
-                f"Found {len(self.valid_classes)} valid identities in {root_dir}."
-            )
-        print(f"[TripletDataset] {len(self.valid_classes)} valid classes, "
-              f"{len(self.hard_twin_pairs)} twin pairs for hard negatives")
+        print(f"[TripletDataset] {len(self.anchor_classes)} anchor classes, "
+              f"{len(self.hard_twin_pairs)} twin pairs available as negatives")
 
     def __len__(self):
         return 20000
 
     def __getitem__(self, idx):
-        while True:
-            try:
-                # Decide whether to use a twin as negative (30% chance)
-                use_twin = self.hard_twin_pairs and random.random() < 0.3
+        # 1. Pick anchor class (always has ≥2 images)
+        anchor_cls = random.choice(self.anchor_classes)
 
-                if use_twin:
-                    # Anchor and positive from twin_A, negative from twin_B
-                    anchor_cls, twin_cls = random.choice(self.hard_twin_pairs)
-                else:
-                    # Normal random negative
-                    anchor_cls = random.choice(self.valid_classes)
-                    negative_cls = random.choice([c for c in self.all_classes if c != anchor_cls])
-                    twin_cls = negative_cls  # not used
+        # 2. Decide whether to use a twin hard negative (30% chance)
+        use_twin = self.hard_twin_pairs and random.random() < 0.3
+        if use_twin:
+            a_twin, b_twin = random.choice(self.hard_twin_pairs)
+            # Use the twin folder that is NOT the same as anchor_cls
+            possible = [c for c in (a_twin, b_twin) if c != anchor_cls and c in self.class_to_images]
+            if possible:
+                negative_cls = random.choice(possible)
+            else:
+                use_twin = False
+        if not use_twin:
+            # Normal negative: any class except anchor
+            negative_cls = random.choice([c for c in self.all_classes if c != anchor_cls])
 
-                # Pick anchor & positive from anchor_cls
-                anchor_path, positive_path = random.sample(self.class_to_images[anchor_cls], 2)
+        # 3. Sample anchor & positive from anchor_cls (≥2 images, no error)
+        anchor_path, positive_path = random.sample(self.class_to_images[anchor_cls], 2)
+        negative_path = random.choice(self.class_to_images[negative_cls])
 
-                if use_twin:
-                    negative_path = random.choice(self.class_to_images[twin_cls])
-                else:
-                    negative_path = random.choice(self.class_to_images[negative_cls])
+        anchor = Image.open(anchor_path).convert("RGB")
+        positive = Image.open(positive_path).convert("RGB")
+        negative = Image.open(negative_path).convert("RGB")
 
-                anchor = Image.open(anchor_path).convert("RGB")
-                positive = Image.open(positive_path).convert("RGB")
-                negative = Image.open(negative_path).convert("RGB")
+        if self.transform:
+            anchor = self.transform(anchor)
+            positive = self.transform(positive)
+            negative = self.transform(negative)
 
-                if self.transform:
-                    anchor = self.transform(anchor)
-                    positive = self.transform(positive)
-                    negative = self.transform(negative)
+        return anchor, positive, negative
 
-                return anchor, positive, negative
 
-            except (FileNotFoundError, Exception) as e:
-                print(f"⚠️ Skipping triplet: {e}")
+# ──────────────────────────────────────────────────────────────────────
+# 3. TwinPairDataset (for contrastive loss on twin pairs)
+# ──────────────────────────────────────────────────────────────────────
+class TwinPairDataset(Dataset):
+    """Yields (imgA, imgB, label=0) for each twin pair. Label 0 = different."""
+    def __init__(self, root_dir, twin_pairs, transform=None):
+        self.transform = transform
+        self.samples = []
+        for a, b in twin_pairs:
+            path_a = os.path.join(root_dir, a)
+            path_b = os.path.join(root_dir, b)
+            if not os.path.isdir(path_a) or not os.path.isdir(path_b):
                 continue
+            imgs_a = [os.path.join(path_a, f) for f in os.listdir(path_a)
+                      if f.lower().endswith(('.jpg','.jpeg','.png'))]
+            imgs_b = [os.path.join(path_b, f) for f in os.listdir(path_b)
+                      if f.lower().endswith(('.jpg','.jpeg','.png'))]
+            if imgs_a and imgs_b:
+                # Randomly pick one image from each twin folder
+                self.samples.append((random.choice(imgs_a), random.choice(imgs_b)))
+        print(f"[TwinPairDataset] {len(self.samples)} twin pair samples for contrastive loss")
+
+    def __len__(self):
+        return len(self.samples)
+
+    def __getitem__(self, idx):
+        path_a, path_b = self.samples[idx]
+        img_a = Image.open(path_a).convert("RGB")
+        img_b = Image.open(path_b).convert("RGB")
+        if self.transform:
+            img_a = self.transform(img_a)
+            img_b = self.transform(img_b)
+        return img_a, img_b, torch.tensor(0.0)   # label = 0 (different)
 
 
+# ──────────────────────────────────────────────────────────────────────
+# 4. auto_detect_twin_pairs (unchanged)
+# ──────────────────────────────────────────────────────────────────────
 def auto_detect_twin_pairs(root_dir):
-    """Detect twin folder pairs (e.g., twins_001_A, twins_001_B)."""
     classes = [d for d in os.listdir(root_dir) if os.path.isdir(os.path.join(root_dir, d))]
     twin_groups = {}
     for cls in classes:

@@ -10,7 +10,7 @@ from sklearn.metrics import roc_curve
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from models.siamese import SiameseNetwork, TripletLoss, ContrastiveLoss
-from utils.dataset import TripletDataset, PairDataset, auto_detect_twin_pairs
+from utils.dataset import TripletDataset, PairDataset, TwinPairDataset, auto_detect_twin_pairs
 from config import (
     DATA_DIR, CHECKPOINT_DIR, IMG_SIZE, BATCH_SIZE, NUM_EPOCHS,
     LEARNING_RATE, TRIPLET_MARGIN, NORMALIZE_MEAN, NORMALIZE_STD, DEVICE,
@@ -213,7 +213,7 @@ def export_onnx(model, checkpoint_dir, device):
             model, (dummy, dummy),
             os.path.join(checkpoint_dir, "model.onnx"),
             input_names=["img1", "img2"], output_names=["emb1", "emb2"],
-            opset_version=17, dynamo=False,
+            opset_version=17,
         )
         print("✓ ONNX model exported")
         model.train()
@@ -230,27 +230,37 @@ def train():
     train_dir = os.path.join(DATA_DIR, "train")
     val_dir = os.path.join(DATA_DIR, "val")
 
-    # Detect twin pairs from training folder (used for hard negatives)
+    # Detect twin pairs
     hard_negative_pairs = auto_detect_twin_pairs(train_dir)
-    if hard_negative_pairs:
-        print(f"✓ Detected {len(hard_negative_pairs)} twin pairs – will be used as hard negatives.")
+    print(f"✓ Detected {len(hard_negative_pairs)} twin pairs – will use as hard negatives.")
 
     train_transform = get_train_transform()
     val_transform = get_val_transform()
 
-    # ───── Build datasets ─────
-    train_dataset = TripletDataset(train_dir, transform=train_transform,
-                                hard_twin_pairs=hard_negative_pairs)   # ← pass twins
-    train_loader = DataLoader(train_dataset, batch_size=BATCH_SIZE, shuffle=True,
-                            num_workers=2, pin_memory=True)
+    # ─── Triplet dataset (identities with ≥2 images) ──────────────
+    triplet_dataset = TripletDataset(
+        train_dir,
+        transform=train_transform,
+        hard_twin_pairs=hard_negative_pairs
+    )
+    triplet_loader = DataLoader(triplet_dataset, batch_size=BATCH_SIZE, shuffle=True,
+                                num_workers=2, pin_memory=True)
 
+    # ─── Twin pair dataset (contrastive loss on twins) ───────────
+    twin_dataset = TwinPairDataset(train_dir, hard_negative_pairs, transform=train_transform)
+    twin_loader = DataLoader(twin_dataset, batch_size=BATCH_SIZE, shuffle=True,
+                             num_workers=0, pin_memory=True)
+
+    # ─── Validation dataset ─────────────────────────────────────
     val_dataset = PairDataset(val_dir, transform=val_transform,
-                            hard_negative_pairs=hard_negative_pairs)     # already supports twins
+                              hard_negative_pairs=hard_negative_pairs)
     val_loader = DataLoader(val_dataset, batch_size=BATCH_SIZE, shuffle=False,
                             num_workers=0, pin_memory=True)
 
     model = SiameseNetwork().to(DEVICE)
-    criterion = TripletLoss(margin=TRIPLET_MARGIN)
+    criterion_triplet = TripletLoss(margin=TRIPLET_MARGIN)
+    criterion_contrastive = ContrastiveLoss(margin=2.0)
+
     optimizer = torch.optim.Adam(model.parameters(), lr=LEARNING_RATE, weight_decay=1e-4)
     scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=NUM_EPOCHS)
 
@@ -258,19 +268,34 @@ def train():
         model, optimizer, CHECKPOINT_DIR, DEVICE
     )
 
-    print(f"\n🚀 Training on {DEVICE} | epochs={NUM_EPOCHS} | batch={BATCH_SIZE}")
-    print(f"   Backbone: ResNet50 | embedding: 256-d | loss: TripletLoss(margin={TRIPLET_MARGIN})\n")
+    print(f"\n🚀 Hybrid training on {DEVICE} | epochs={NUM_EPOCHS}")
+    print(f"   Triplet + Contrastive (twins) | margin={TRIPLET_MARGIN}\n")
 
     for epoch in range(start_epoch, NUM_EPOCHS):
         model.train()
         epoch_loss = 0.0
+        n_batches = min(len(triplet_loader), len(twin_loader))
 
-        for anchor, positive, negative in tqdm(train_loader, desc=f"Epoch {epoch+1}/{NUM_EPOCHS}"):
+        # Zip the two loaders together (they will cycle)
+        for (anchor, positive, negative), (img1, img2, label) in zip(
+            tqdm(triplet_loader, desc=f"Epoch {epoch+1}/{NUM_EPOCHS}"),
+            twin_loader
+        ):
             anchor, positive, negative = anchor.to(DEVICE), positive.to(DEVICE), negative.to(DEVICE)
+            img1, img2, label = img1.to(DEVICE), img2.to(DEVICE), label.to(DEVICE)
+
+            # Triplet loss
             emb_a = model.forward_once(anchor)
             emb_p = model.forward_once(positive)
             emb_n = model.forward_once(negative)
-            loss = criterion(emb_a, emb_p, emb_n)
+            loss_triplet = criterion_triplet(emb_a, emb_p, emb_n)
+
+            # Contrastive loss on twin pairs (label=0 → push apart)
+            emb1 = model.forward_once(img1)
+            emb2 = model.forward_once(img2)
+            loss_contrastive = criterion_contrastive(emb1, emb2, label)
+
+            loss = loss_triplet + 0.5 * loss_contrastive   # weight twin loss
 
             optimizer.zero_grad()
             loss.backward()
@@ -278,15 +303,15 @@ def train():
             optimizer.step()
             epoch_loss += loss.item()
 
-        avg_loss = epoch_loss / len(train_loader)
+        avg_loss = epoch_loss / n_batches
         val_loss = validate(model, val_loader, DEVICE)
         scheduler.step()
 
         print(f"Epoch {epoch+1:03d} | train_loss={avg_loss:.4f} | val_loss={val_loss:.4f} | lr={scheduler.get_last_lr()[0]:.2e}")
 
-        # Calibrate every 2 epochs (using cosine similarity now – your updated function)
+        # Calibrate every 2 epochs (cosine similarity)
         if (epoch + 1) % 2 == 0:
-            th_same_twin, th_twin_diff, overlap = calibrate_threshold(model, val_loader, DEVICE, metric='cosine')
+            th_same_twin, th_twin_diff, _ = calibrate_threshold(model, val_loader, DEVICE, metric='cosine')
 
         if avg_loss < best_loss:
             best_loss = avg_loss
@@ -294,12 +319,12 @@ def train():
                             th_same_twin, th_twin_diff, CHECKPOINT_DIR)
             print(f"  ✓ New best model saved (loss={best_loss:.4f})")
 
-    # Final calibration and export
-    th_same_twin, th_twin_diff, overlap = calibrate_threshold(model, val_loader, DEVICE, metric='cosine')
-    save_checkpoint(model, optimizer, NUM_EPOCHS - 1, best_loss, best_loss,
+    # Final calibration & export
+    th_same_twin, th_twin_diff, _ = calibrate_threshold(model, val_loader, DEVICE, metric='cosine')
+    save_checkpoint(model, optimizer, NUM_EPOCHS-1, best_loss, best_loss,
                     th_same_twin, th_twin_diff, CHECKPOINT_DIR)
     export_onnx(model, CHECKPOINT_DIR, DEVICE)
     print("\n✅ Training complete!")
-
+    
 if __name__ == "__main__":
     train()
