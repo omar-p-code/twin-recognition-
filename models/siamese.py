@@ -116,3 +116,36 @@ def compare_faces(model, img1, img2, th_same, th_twin, device="cpu", detect_face
     except Exception as e:
         print(f"Comparison error: {e}")
         return None, "Comparison Failed", detection_info
+
+
+class BatchHardTripletLoss(nn.Module):
+    """
+    Batch‑hard triplet loss: for each anchor, the hardest positive (farthest
+    positive) and hardest negative (nearest negative) within the batch are used.
+    Margin is enforced between the hardest positive distance and the hardest
+    negative distance.
+    """
+    def __init__(self, margin=1.5):
+        super().__init__()
+        self.margin = margin
+
+    def forward(self, embeddings, labels):
+        """
+        embeddings : [N, dim]  (L2‑normalised)
+        labels : [N]           (integer class indices)
+        """
+        pairwise_dist = torch.cdist(embeddings, embeddings, p=2)
+
+        mask_anchor_positive = labels.unsqueeze(0) == labels.unsqueeze(1)
+        mask_anchor_negative = labels.unsqueeze(0) != labels.unsqueeze(1)
+
+        # Hardest positive = largest distance among same‑class pairs
+        hardest_positive_dist = pairwise_dist * mask_anchor_positive.float()
+        hardest_positive_dist = hardest_positive_dist.max(dim=1)[0]
+
+        # Hardest negative = smallest distance among different‑class pairs
+        hardest_negative_dist = pairwise_dist + 1e9 * (~mask_anchor_negative).float()
+        hardest_negative_dist = hardest_negative_dist.min(dim=1)[0]
+
+        loss = torch.clamp(hardest_positive_dist - hardest_negative_dist + self.margin, min=0.0)
+        return loss.mean()

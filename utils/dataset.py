@@ -3,6 +3,19 @@ import random
 from PIL import Image
 import torch
 from torch.utils.data import Dataset
+import torchvision.transforms as transforms
+from config import IMG_SIZE, NORMALIZE_MEAN, NORMALIZE_STD
+
+# ─── Strong augmentations for twin pairs (to prevent overfitting) ──────────
+def get_strong_train_transform():
+    return transforms.Compose([
+        transforms.Resize((IMG_SIZE, IMG_SIZE)),
+        transforms.RandomHorizontalFlip(),
+        transforms.RandomAffine(degrees=15, translate=(0.1, 0.1), scale=(0.9, 1.1)),
+        transforms.ColorJitter(brightness=0.4, contrast=0.4, saturation=0.3, hue=0.1),
+        transforms.ToTensor(),
+        transforms.Normalize(NORMALIZE_MEAN, NORMALIZE_STD),
+    ])
 
 # ──────────────────────────────────────────────────────────────────────
 # 1. PairDataset (unchanged, for validation)
@@ -109,7 +122,7 @@ class PairDataset(Dataset):
 
 
 # ──────────────────────────────────────────────────────────────────────
-# 2. TripletDataset (only uses classes with ≥2 images as anchor)
+# 2. TripletDataset (returns labels for batch‑hard)
 # ──────────────────────────────────────────────────────────────────────
 class TripletDataset(Dataset):
     def __init__(self, root_dir, transform=None, hard_twin_pairs=None):
@@ -125,44 +138,42 @@ class TripletDataset(Dataset):
             if images:
                 self.class_to_images[cls] = images
 
-        # Only classes with ≥2 images can serve as anchor (for anchor & positive)
         self.anchor_classes = [c for c in self.class_to_images if len(self.class_to_images[c]) >= 2]
         if not self.anchor_classes:
             raise ValueError("Need at least one class with ≥2 images for anchor.")
 
         self.all_classes = list(self.class_to_images.keys())
 
-        # Keep twin pairs (both folders may have 1 image – that's fine, they can be negatives)
+        # Build a mapping class -> index (for label)
+        self.class_to_idx = {cls: i for i, cls in enumerate(self.all_classes)}
+
         self.hard_twin_pairs = hard_twin_pairs or []
-        # Filter to existing folders
         self.hard_twin_pairs = [(a,b) for (a,b) in self.hard_twin_pairs
                                 if a in self.class_to_images and b in self.class_to_images]
 
         print(f"[TripletDataset] {len(self.anchor_classes)} anchor classes, "
-              f"{len(self.hard_twin_pairs)} twin pairs available as negatives")
+              f"{len(self.hard_twin_pairs)} twin pairs as negatives")
 
     def __len__(self):
         return 20000
 
     def __getitem__(self, idx):
-        # 1. Pick anchor class (always has ≥2 images)
+        # 1. Pick anchor class (always ≥2 images)
         anchor_cls = random.choice(self.anchor_classes)
 
         # 2. Decide whether to use a twin hard negative (30% chance)
         use_twin = self.hard_twin_pairs and random.random() < 0.3
         if use_twin:
             a_twin, b_twin = random.choice(self.hard_twin_pairs)
-            # Use the twin folder that is NOT the same as anchor_cls
             possible = [c for c in (a_twin, b_twin) if c != anchor_cls and c in self.class_to_images]
             if possible:
                 negative_cls = random.choice(possible)
             else:
                 use_twin = False
         if not use_twin:
-            # Normal negative: any class except anchor
             negative_cls = random.choice([c for c in self.all_classes if c != anchor_cls])
 
-        # 3. Sample anchor & positive from anchor_cls (≥2 images, no error)
+        # 3. Sample images
         anchor_path, positive_path = random.sample(self.class_to_images[anchor_cls], 2)
         negative_path = random.choice(self.class_to_images[negative_cls])
 
@@ -175,14 +186,17 @@ class TripletDataset(Dataset):
             positive = self.transform(positive)
             negative = self.transform(negative)
 
-        return anchor, positive, negative
+        # Return class indices for anchor and negative
+        anchor_label = self.class_to_idx[anchor_cls]
+        negative_label = self.class_to_idx[negative_cls]
+
+        return anchor, positive, negative, anchor_label, negative_label
 
 
 # ──────────────────────────────────────────────────────────────────────
-# 3. TwinPairDataset (for contrastive loss on twin pairs)
+# 3. TwinPairDataset (uses strong augmentations)
 # ──────────────────────────────────────────────────────────────────────
 class TwinPairDataset(Dataset):
-    """Yields (imgA, imgB, label=0) for each twin pair. Label 0 = different."""
     def __init__(self, root_dir, twin_pairs, transform=None):
         self.transform = transform
         self.samples = []
