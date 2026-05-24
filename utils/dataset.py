@@ -218,14 +218,18 @@ class TwinPairDataset(Dataset):
         return len(self.samples)
 
     def __getitem__(self, idx):
-        path_a, path_b = self.samples[idx]
-        img_a = Image.open(path_a).convert("RGB")
-        img_b = Image.open(path_b).convert("RGB")
+        img_a_path, img_b_path = self.twin_pairs[idx]
+
+        img_a = Image.open(img_a_path).convert("RGB")
+        img_b = Image.open(img_b_path).convert("RGB")
+
         if self.transform:
             img_a = self.transform(img_a)
             img_b = self.transform(img_b)
-        return img_a, img_b, torch.tensor(0.0)   # label = 0 (different)
 
+        label = torch.tensor(1.0, dtype=torch.float32)
+
+        return img_a, img_b, label
 
 # ──────────────────────────────────────────────────────────────────────
 # 4. auto_detect_twin_pairs (unchanged)

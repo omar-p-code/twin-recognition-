@@ -19,16 +19,22 @@ NORMALIZE_STD  = [0.229, 0.224, 0.225]
 # =========================
 # Training
 # =========================
-BATCH_SIZE     = 32
-NUM_EPOCHS     = 20
-EMBEDDING_DIM  = 256
-LEARNING_RATE  = 1e-4
-MARGIN         = 2.0
-TRIPLET_MARGIN = 1.0
-CONTRASTIVE_MARGIN = 1.0          # ← increased for batch‑hard
-SAME_LABEL     = 1
-DIFF_LABEL     = 0
+# =========================
+# Training
+# =========================
+BATCH_SIZE = 16
+NUM_EPOCHS = 20
 
+EMBEDDING_DIM = 512
+
+LEARNING_RATE = 3e-5
+
+MARGIN = 2.0
+TRIPLET_MARGIN = 1.0
+CONTRASTIVE_MARGIN = 0.5
+
+SAME_LABEL = 1
+DIFF_LABEL = 0
 # =========================
 # Face Detection
 # =========================

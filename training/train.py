@@ -1,4 +1,5 @@
 import torch
+import torch.nn as nn
 from torch.utils.data import DataLoader
 import torchvision.transforms as transforms
 from tqdm import tqdm
@@ -188,6 +189,7 @@ def export_onnx(model, checkpoint_dir, device):
 # -----------------------------------------------------------------------
 def train():
     os.makedirs(CHECKPOINT_DIR, exist_ok=True)
+
     train_dir = os.path.join(DATA_DIR, "train")
     val_dir = os.path.join(DATA_DIR, "val")
 
@@ -198,106 +200,220 @@ def train():
     val_transform = get_val_transform()
     strong_transform = get_strong_train_transform()
 
-    # Triplet dataset – twins allowed as negatives (soft mixing)
     triplet_dataset = TripletDataset(
         train_dir,
         transform=train_transform,
-        hard_twin_pairs=hard_negative_pairs     # ← twins back in
+        hard_twin_pairs=hard_negative_pairs
     )
-    triplet_loader = DataLoader(triplet_dataset, batch_size=BATCH_SIZE, shuffle=True,
-                                num_workers=2, pin_memory=True)
 
-    # Twin pair dataset with strong augmentations
-    twin_dataset = TwinPairDataset(train_dir, hard_negative_pairs,
-                                   transform=strong_transform)
-    twin_loader = DataLoader(twin_dataset, batch_size=BATCH_SIZE, shuffle=True,
-                             num_workers=0, pin_memory=True) if len(twin_dataset) > 0 else None
+    triplet_loader = DataLoader(
+        triplet_dataset,
+        batch_size=BATCH_SIZE,
+        shuffle=True,
+        num_workers=2,
+        pin_memory=True
+    )
 
-    # Validation dataset
-    val_dataset = PairDataset(val_dir, transform=val_transform,
-                              hard_negative_pairs=hard_negative_pairs)
-    val_loader = DataLoader(val_dataset, batch_size=BATCH_SIZE, shuffle=False,
-                            num_workers=0, pin_memory=True)
+    twin_dataset = TwinPairDataset(
+        train_dir,
+        hard_negative_pairs,
+        transform=strong_transform
+    )
+
+    twin_loader = DataLoader(
+        twin_dataset,
+        batch_size=BATCH_SIZE,
+        shuffle=True,
+        num_workers=0,
+        pin_memory=True
+    ) if len(twin_dataset) > 0 else None
+
+    val_dataset = PairDataset(
+        val_dir,
+        transform=val_transform,
+        hard_negative_pairs=hard_negative_pairs
+    )
+
+    val_loader = DataLoader(
+        val_dataset,
+        batch_size=BATCH_SIZE,
+        shuffle=False,
+        num_workers=0,
+        pin_memory=True
+    )
 
     model = SiameseNetwork().to(DEVICE)
-    criterion_triplet = TripletLoss(margin=TRIPLET_MARGIN)          # normal triplet loss
-    criterion_contrastive = ContrastiveLoss(margin=CONTRASTIVE_MARGIN)
 
-    optimizer = torch.optim.Adam(model.parameters(), lr=LEARNING_RATE, weight_decay=1e-4)
-    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=NUM_EPOCHS)
-
-    start_epoch, best_loss, th_same_twin, th_twin_diff = load_checkpoint(
-        model, optimizer, CHECKPOINT_DIR, DEVICE
+    criterion_triplet = TripletLoss(margin=TRIPLET_MARGIN)
+    criterion_twin = nn.CosineEmbeddingLoss(
+        margin=CONTRASTIVE_MARGIN
     )
 
-    print(f"\n🚀 Hybrid training on {DEVICE} | epochs={NUM_EPOCHS}")
-    if twin_loader:
-        print(f"   Triplet + Contrastive (twins) | triplet margin={TRIPLET_MARGIN} / contrastive margin={CONTRASTIVE_MARGIN}")
-    else:
-        print(f"   Triplet only (no twin pairs found) | margin={TRIPLET_MARGIN}")
+    optimizer = torch.optim.Adam(
+        model.parameters(),
+        lr=LEARNING_RATE,
+        weight_decay=1e-4
+    )
+
+    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
+        optimizer,
+        T_max=NUM_EPOCHS
+    )
+
+    scaler = torch.cuda.amp.GradScaler(
+        enabled=torch.cuda.is_available()
+    )
+
+    start_epoch, best_loss, th_same_twin, th_twin_diff = load_checkpoint(
+        model,
+        optimizer,
+        CHECKPOINT_DIR,
+        DEVICE
+    )
 
     twin_iter = cycle(twin_loader) if twin_loader else None
 
+    print(f"\n🚀 Training on {DEVICE}")
+
     for epoch in range(start_epoch, NUM_EPOCHS):
+
         model.train()
         epoch_loss = 0.0
-        steps = len(triplet_loader)
 
-        progress_bar = tqdm(triplet_loader, desc=f"Epoch {epoch+1}/{NUM_EPOCHS}", total=steps)
-        for batch_idx, (anchor, positive, negative, *_) in enumerate(progress_bar):
-            anchor, positive, negative = anchor.to(DEVICE), positive.to(DEVICE), negative.to(DEVICE)
+        progress_bar = tqdm(
+            triplet_loader,
+            desc=f"Epoch {epoch+1}/{NUM_EPOCHS}"
+        )
 
-            # Triplet loss (embeddings are not concatenated – forward_once returns normalized)
-            emb_a = model.forward_once(anchor)
-            emb_p = model.forward_once(positive)
-            emb_n = model.forward_once(negative)
-            loss_triplet = criterion_triplet(emb_a, emb_p, emb_n)
+        for anchor, positive, negative, *_ in progress_bar:
 
-            # Contrastive loss on strongly augmented twin pairs
-            if twin_iter:
-                try:
-                    img1, img2, label = next(twin_iter)
-                    img1, img2, label = img1.to(DEVICE), img2.to(DEVICE), label.to(DEVICE)
-                    emb1 = model.forward_once(img1)
-                    emb2 = model.forward_once(img2)
-                    loss_contrastive = criterion_contrastive(emb1, emb2, label)
-                except StopIteration:
-                    loss_contrastive = 0.0
-            else:
-                loss_contrastive = 0.0
-
-            loss = loss_triplet + 5.0 * loss_contrastive   # keep weight 5
+            anchor = anchor.to(DEVICE)
+            positive = positive.to(DEVICE)
+            negative = negative.to(DEVICE)
 
             optimizer.zero_grad()
-            loss.backward()
-            torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
-            optimizer.step()
+
+            with torch.cuda.amp.autocast(
+                enabled=torch.cuda.is_available()
+            ):
+
+                emb_a = model.forward_once(anchor)
+                emb_p = model.forward_once(positive)
+                emb_n = model.forward_once(negative)
+
+                loss_triplet = criterion_triplet(
+                    emb_a,
+                    emb_p,
+                    emb_n
+                )
+
+                loss_twin = 0.0
+
+                if twin_iter:
+                    img1, img2, label = next(twin_iter)
+
+                    img1 = img1.to(DEVICE)
+                    img2 = img2.to(DEVICE)
+                    label = label.to(DEVICE)
+
+                    emb1 = model.forward_once(img1)
+                    emb2 = model.forward_once(img2)
+
+                    loss_twin = criterion_twin(
+                        emb1,
+                        emb2,
+                        label
+                    )
+
+                loss = loss_triplet + loss_twin
+
+            scaler.scale(loss).backward()
+
+            scaler.unscale_(optimizer)
+
+            torch.nn.utils.clip_grad_norm_(
+                model.parameters(),
+                max_norm=1.0
+            )
+
+            scaler.step(optimizer)
+            scaler.update()
+
             epoch_loss += loss.item()
 
-            progress_bar.set_postfix(loss=loss.item(), triplet=loss_triplet.item(),
-                                     twin=loss_contrastive.item() if twin_iter else 0.0)
+            progress_bar.set_postfix(
+                loss=loss.item(),
+                triplet=loss_triplet.item(),
+                twin=loss_twin.item() if twin_iter else 0.0
+            )
 
-        avg_loss = epoch_loss / steps
-        val_loss = validate(model, val_loader, DEVICE)
+        avg_loss = epoch_loss / len(triplet_loader)
+
+        val_loss = validate(
+            model,
+            val_loader,
+            DEVICE
+        )
+
         scheduler.step()
 
-        print(f"Epoch {epoch+1:03d} | train_loss={avg_loss:.4f} | val_loss={val_loss:.4f} | lr={scheduler.get_last_lr()[0]:.2e}")
+        print(
+            f"Epoch {epoch+1:03d} | "
+            f"train_loss={avg_loss:.4f} | "
+            f"val_loss={val_loss:.4f}"
+        )
 
         if (epoch + 1) % 2 == 0:
-            th_same_twin, th_twin_diff, _ = calibrate_threshold(model, val_loader, DEVICE, metric='cosine')
+            th_same_twin, th_twin_diff, _ = calibrate_threshold(
+                model,
+                val_loader,
+                DEVICE,
+                metric='cosine'
+            )
 
         if avg_loss < best_loss:
             best_loss = avg_loss
-            save_checkpoint(model, optimizer, epoch, avg_loss, best_loss,
-                            th_same_twin, th_twin_diff, CHECKPOINT_DIR)
-            print(f"  ✓ New best model saved (loss={best_loss:.4f})")
 
-    # Final calibration & export
-    th_same_twin, th_twin_diff, _ = calibrate_threshold(model, val_loader, DEVICE, metric='cosine')
-    save_checkpoint(model, optimizer, NUM_EPOCHS-1, best_loss, best_loss,
-                    th_same_twin, th_twin_diff, CHECKPOINT_DIR)
-    export_onnx(model, CHECKPOINT_DIR, DEVICE)
+            save_checkpoint(
+                model,
+                optimizer,
+                epoch,
+                avg_loss,
+                best_loss,
+                th_same_twin,
+                th_twin_diff,
+                CHECKPOINT_DIR
+            )
+
+            print(
+                f"✓ New best model saved "
+                f"(loss={best_loss:.4f})"
+            )
+
+    th_same_twin, th_twin_diff, _ = calibrate_threshold(
+        model,
+        val_loader,
+        DEVICE,
+        metric='cosine'
+    )
+
+    save_checkpoint(
+        model,
+        optimizer,
+        NUM_EPOCHS - 1,
+        best_loss,
+        best_loss,
+        th_same_twin,
+        th_twin_diff,
+        CHECKPOINT_DIR
+    )
+
+    export_onnx(
+        model,
+        CHECKPOINT_DIR,
+        DEVICE
+    )
+
     print("\n✅ Training complete!")
-
 if __name__ == "__main__":
     train()

@@ -26,22 +26,23 @@ class SiameseNetwork(nn.Module):
         # Projection head: 2048 → 512 → EMBEDDING_DIM (no Dropout)
         self.fc = nn.Sequential(
             nn.Linear(2048, 512),
-            nn.BatchNorm1d(512),
+            # nn.BatchNorm1d(512),
             nn.ReLU(inplace=True),
-            nn.Dropout(0.3),   # removed for TFLite compatibility
+            # nn.Dropout(0.3),   # removed for TFLite compatibility
             nn.Linear(512, EMBEDDING_DIM),
         )
 
     def forward_once(self, x):
         x = self.feature_extractor(x)
-        x = x.view(x.size(0), -1)   # flatten
+        x = torch.flatten(x, 1)
         x = self.fc(x)
-        # Optional L2 normalisation – uncomment if used during training
         x = F.normalize(x, p=2, dim=1)
         return x
 
     def forward(self, x1, x2):
-        return self.forward_once(x1), self.forward_once(x2)
+        emb1 = self.forward_once(x1)
+        emb2 = self.forward_once(x2)
+        return emb1, emb2  
 
 
 class TripletLoss(nn.Module):
