@@ -200,14 +200,14 @@ class TwinPairDataset(Dataset):
     def __init__(self, root_dir, twin_pairs, transform=None):
         self.root_dir = root_dir
         self.transform = transform
-        self.twin_pairs = twin_pairs if twin_pairs else []
+        self.twin_pairs = []
 
-        # cache image paths once
-        self.cached_pairs = []
-
-        for class_a, class_b in self.twin_pairs:
+        for class_a, class_b in twin_pairs:
             dir_a = os.path.join(root_dir, class_a)
             dir_b = os.path.join(root_dir, class_b)
+
+            if not os.path.isdir(dir_a) or not os.path.isdir(dir_b):
+                continue
 
             imgs_a = [
                 os.path.join(dir_a, f)
@@ -221,18 +221,18 @@ class TwinPairDataset(Dataset):
                 if f.lower().endswith((".jpg", ".jpeg", ".png"))
             ]
 
-            if imgs_a and imgs_b:
-                self.cached_pairs.append((imgs_a, imgs_b))
+            if len(imgs_a) and len(imgs_b):
+                self.twin_pairs.append((imgs_a, imgs_b))
 
         print(
-            f"[TwinPairDataset] {len(self.cached_pairs)} twin pair samples for contrastive loss"
+            f"[TwinPairDataset] Loaded {len(self.twin_pairs)} twin groups"
         )
 
     def __len__(self):
-        return len(self.cached_pairs)
+        return len(self.twin_pairs)
 
     def __getitem__(self, idx):
-        imgs_a, imgs_b = self.cached_pairs[idx]
+        imgs_a, imgs_b = self.twin_pairs[idx]
 
         img_a_path = random.choice(imgs_a)
         img_b_path = random.choice(imgs_b)
@@ -247,7 +247,6 @@ class TwinPairDataset(Dataset):
         label = torch.tensor(1.0, dtype=torch.float32)
 
         return img_a, img_b, label
-    
 # ──────────────────────────────────────────────────────────────────────
 # 4. auto_detect_twin_pairs (unchanged)
 # ──────────────────────────────────────────────────────────────────────
