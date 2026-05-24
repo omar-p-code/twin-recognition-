@@ -284,7 +284,7 @@ def train():
         steps = len(triplet_loader)
 
         progress_bar = tqdm(triplet_loader, desc=f"Epoch {epoch+1}/{NUM_EPOCHS}", total=steps)
-        for batch_idx, (anchor, positive, negative) in enumerate(progress_bar):
+        for batch_idx, (anchor, positive, negative, anchor_labels, neg_labels) in enumerate(progress_bar):
             anchor, positive, negative = anchor.to(DEVICE), positive.to(DEVICE), negative.to(DEVICE)
 
             # Triplet loss
