@@ -212,7 +212,25 @@ class TwinPairDataset(Dataset):
         return len(self.twin_pairs)
 
     def __getitem__(self, idx):
-        img_a_path, img_b_path = self.twin_pairs[idx]
+        class_a, class_b = self.twin_pairs[idx]
+
+        dir_a = os.path.join(self.root_dir, class_a)
+        dir_b = os.path.join(self.root_dir, class_b)
+
+        imgs_a = [
+            os.path.join(dir_a, f)
+            for f in os.listdir(dir_a)
+            if f.lower().endswith((".jpg", ".jpeg", ".png"))
+        ]
+
+        imgs_b = [
+            os.path.join(dir_b, f)
+            for f in os.listdir(dir_b)
+            if f.lower().endswith((".jpg", ".jpeg", ".png"))
+        ]
+
+        img_a_path = random.choice(imgs_a)
+        img_b_path = random.choice(imgs_b)
 
         img_a = Image.open(img_a_path).convert("RGB")
         img_b = Image.open(img_b_path).convert("RGB")
@@ -221,10 +239,9 @@ class TwinPairDataset(Dataset):
             img_a = self.transform(img_a)
             img_b = self.transform(img_b)
 
-        label = torch.tensor(
-            1.0,
-            dtype=torch.float32
-        )
+        label = torch.tensor(1.0, dtype=torch.float32)
+
+        return img_a, img_b, label
 
         return img_a, img_b, label
 # ──────────────────────────────────────────────────────────────────────
