@@ -24,7 +24,8 @@ NUM_EPOCHS     = 20
 EMBEDDING_DIM  = 256
 LEARNING_RATE  = 1e-4
 MARGIN         = 2.0
-TRIPLET_MARGIN = 1.5            # ← increased for batch‑hard
+TRIPLET_MARGIN = 1.5
+CONTRASTIVE_MARGIN = 1.0          # ← increased for batch‑hard
 SAME_LABEL     = 1
 DIFF_LABEL     = 0
 

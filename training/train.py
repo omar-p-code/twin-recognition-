@@ -5,25 +5,40 @@ from tqdm import tqdm
 import os
 import numpy as np
 import sys
-from sklearn.metrics import roc_curve
+from itertools import cycle
 
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from models.siamese import SiameseNetwork, TripletLoss, ContrastiveLoss
-from utils.dataset import TripletDataset, PairDataset, TwinPairDataset, auto_detect_twin_pairs
+from utils.dataset import (
+    TripletDataset,
+    PairDataset,
+    TwinPairDataset,
+    auto_detect_twin_pairs,
+    get_strong_train_transform,      # <-- for twin pairs
+)
 from config import (
-    DATA_DIR, CHECKPOINT_DIR, IMG_SIZE, BATCH_SIZE, NUM_EPOCHS,
-    LEARNING_RATE, TRIPLET_MARGIN, NORMALIZE_MEAN, NORMALIZE_STD, DEVICE,
+    DATA_DIR,
+    CHECKPOINT_DIR,
+    IMG_SIZE,
+    BATCH_SIZE,
+    NUM_EPOCHS,
+    LEARNING_RATE,
+    TRIPLET_MARGIN,
+    CONTRASTIVE_MARGIN,               # <-- new margin for twins
+    NORMALIZE_MEAN,
+    NORMALIZE_STD,
+    DEVICE,
 )
 
 # -----------------------------------------------------------------------
-# Transforms (milder for better identity preservation)
+# Transforms
 # -----------------------------------------------------------------------
 def get_train_transform():
     return transforms.Compose([
-        transforms.Resize((IMG_SIZE, IMG_SIZE)),          # direct resize, no extra crop
+        transforms.Resize((IMG_SIZE, IMG_SIZE)),
         transforms.RandomHorizontalFlip(),
-        transforms.ColorJitter(brightness=0.2, contrast=0.2),  # milder
+        transforms.ColorJitter(brightness=0.2, contrast=0.2),
         transforms.ToTensor(),
         transforms.Normalize(NORMALIZE_MEAN, NORMALIZE_STD),
     ])
@@ -35,33 +50,24 @@ def get_val_transform():
         transforms.Normalize(NORMALIZE_MEAN, NORMALIZE_STD),
     ])
 
-
 # -----------------------------------------------------------------------
-# 3‑label threshold calibration
+# Calibration (unchanged, already supports cosine)
 # -----------------------------------------------------------------------
 def calibrate_threshold(model, val_loader, device, percentile_low=5, percentile_high=95, metric='cosine'):
-    """
-    Compute two thresholds (same_twin, twin_diff) using percentiles.
-    metric: 'euclidean' (distance) or 'cosine' (similarity)
-    Returns (th_same_twin, th_twin_diff, overlap_warning)
-    """
     model.eval()
-    same_vals = []
-    twin_vals = []
-    diff_vals = []
+    same_vals, twin_vals, diff_vals = [], [], []
 
     with torch.no_grad():
         for img1, img2, label in tqdm(val_loader, desc=f"Calibrating thresholds ({metric})"):
             img1, img2 = img1.to(device), img2.to(device)
             e1, e2 = model(img1, img2)
-
             e1 = torch.nn.functional.normalize(e1, p=2, dim=1)
             e2 = torch.nn.functional.normalize(e2, p=2, dim=1)
 
             if metric == 'euclidean':
                 vals = torch.nn.functional.pairwise_distance(e1, e2).cpu().numpy()
-            else:  # cosine
-                vals = torch.sum(e1 * e2, dim=1).cpu().numpy()   # similarity
+            else:
+                vals = torch.sum(e1 * e2, dim=1).cpu().numpy()
 
             labels_np = label.cpu().numpy()
             for v, l in zip(vals, labels_np):
@@ -85,27 +91,17 @@ def calibrate_threshold(model, val_loader, device, percentile_low=5, percentile_
     print(f"  TWIN:  {stats(twin_vals)}")
     print(f"  DIFF:  {stats(diff_vals)}")
 
-    # Sanity check (different for distance vs similarity)
-    if metric == 'euclidean':
-        overlap_same_diff = np.max(same_vals) >= np.min(diff_vals)
-        if overlap_same_diff:
-            print("\n⚠️ WARNING: same and diff distance distributions overlap!")
-    else:   # cosine
-        overlap_same_diff = np.min(same_vals) <= np.max(diff_vals)
-        if overlap_same_diff:
-            print("\n⚠️ WARNING: same and diff similarity distributions overlap!")
-
-    if not overlap_same_diff:
+    overlap_same_diff = np.min(same_vals) <= np.max(diff_vals) if metric == 'cosine' else np.max(same_vals) >= np.min(diff_vals)
+    if overlap_same_diff:
+        print(f"\n⚠️ WARNING: same and diff {unit} distributions overlap!")
+    else:
         print("\n✅ Good separation: same and diff are separated.")
 
-    # Compute thresholds
     if len(twin_vals) > 0:
         if metric == 'euclidean':
-            # lower distance = same
             th_same_twin = (np.percentile(same_vals, percentile_high) + np.percentile(twin_vals, percentile_low)) / 2
             th_twin_diff = (np.percentile(twin_vals, percentile_high) + np.percentile(diff_vals, percentile_low)) / 2
-        else:   # cosine
-            # higher similarity = same
+        else:
             th_same_twin = (np.percentile(same_vals, percentile_low) + np.percentile(twin_vals, percentile_high)) / 2
             th_twin_diff = (np.percentile(twin_vals, percentile_low) + np.percentile(diff_vals, percentile_high)) / 2
     else:
@@ -116,37 +112,30 @@ def calibrate_threshold(model, val_loader, device, percentile_low=5, percentile_
             th_same_twin = np.percentile(same_vals, percentile_low) - 0.1
             th_twin_diff = (np.percentile(twin_vals, percentile_low) + np.percentile(diff_vals, percentile_high)) / 2
 
-    # Ensure logical order
+    # Ensure correct ordering
     if metric == 'euclidean':
         if th_same_twin >= th_twin_diff:
             print("⚠️ Warning: distance thresholds inverted. Adjusting.")
             mid = (th_same_twin + th_twin_diff) / 2
             th_same_twin = mid - 0.1
             th_twin_diff = mid + 0.1
-    else:   # cosine: th_same_twin must be > th_twin_diff
+    else:
         if th_same_twin <= th_twin_diff:
             print("⚠️ Warning: similarity thresholds inverted. Adjusting.")
             mid = (th_same_twin + th_twin_diff) / 2
             th_same_twin = mid + 0.1
             th_twin_diff = mid - 0.1
 
-    if metric == 'euclidean':
-        print(f"\n📊 Final thresholds (percentile method):")
-        print(f"  th_same_twin = {th_same_twin:.4f}  (distance < this → SAME PERSON)")
-        print(f"  th_twin_diff = {th_twin_diff:.4f}   (distance between → TWINS, > this → DIFFERENT)")
-    else:
-        print(f"\n📊 Final cosine similarity thresholds:")
-        print(f"  th_same_twin = {th_same_twin:.4f}  (similarity > this → SAME PERSON)")
-        print(f"  th_twin_diff = {th_twin_diff:.4f}   (similarity between → TWINS, < this → DIFFERENT)")
-
+    print(f"\n📊 Final {unit} thresholds:")
+    print(f"  th_same_twin = {th_same_twin:.4f}")
+    print(f"  th_twin_diff = {th_twin_diff:.4f}")
     model.train()
     return th_same_twin, th_twin_diff, overlap_same_diff
 
 # -----------------------------------------------------------------------
-# Validation (contrastive loss monitoring)
+# Validation
 # -----------------------------------------------------------------------
 def validate(model, loader, device):
-    """Contrastive loss: same (2) → 1, twins(1)/diff(0) → 0."""
     model.eval()
     total = 0.0
     criterion = ContrastiveLoss(margin=2.0)
@@ -154,20 +143,19 @@ def validate(model, loader, device):
         for img1, img2, label in loader:
             img1, img2, label = img1.to(device), img2.to(device), label.to(device)
             e1, e2 = model(img1, img2)
-            binary_label = (label == 2).float()   # 1 if same, 0 otherwise
+            binary_label = (label == 2).float()
             total += criterion(e1, e2, binary_label).item()
     model.train()
     return total / len(loader)
 
 # -----------------------------------------------------------------------
-# Checkpoint helpers (store two thresholds)
+# Checkpoint helpers
 # -----------------------------------------------------------------------
 def load_checkpoint(model, optimizer, checkpoint_dir, device):
     path = os.path.join(checkpoint_dir, "checkpoint.pth")
     if not os.path.exists(path):
         print("No checkpoint found – starting from scratch")
-        return 0, float("inf"), 0.35, 0.60   # fallback thresholds
-
+        return 0, float("inf"), 0.35, 0.60
     ckpt = torch.load(path, map_location=device)
     model.load_state_dict(ckpt["model_state_dict"])
     if optimizer and "optimizer_state_dict" in ckpt:
@@ -193,17 +181,7 @@ def save_checkpoint(model, optimizer, epoch, loss, best_loss, th_same_twin, th_t
         "threshold_same_twin": th_same_twin,
         "threshold_twin_diff": th_twin_diff,
     }
-    ckpt2 = {
-        "epoch": epoch,
-        "model_state_dict": model.state_dict(),
-        "loss": loss,
-        "best_loss": best_loss,
-        "threshold_same_twin": th_same_twin,
-        "threshold_twin_diff": th_twin_diff,
-    }
-    
     torch.save(ckpt, os.path.join(checkpoint_dir, "checkpoint.pth"))
-    torch.save(ckpt2, os.path.join(checkpoint_dir, "checkpoint2.pth"))
 
 def export_onnx(model, checkpoint_dir, device):
     try:
@@ -212,7 +190,8 @@ def export_onnx(model, checkpoint_dir, device):
         torch.onnx.export(
             model, (dummy, dummy),
             os.path.join(checkpoint_dir, "model.onnx"),
-            input_names=["img1", "img2"], output_names=["emb1", "emb2"],
+            input_names=["img1", "img2"],
+            output_names=["emb1", "emb2"],
             opset_version=17,
         )
         print("✓ ONNX model exported")
@@ -220,12 +199,9 @@ def export_onnx(model, checkpoint_dir, device):
     except Exception as e:
         print(f"ONNX export failed: {e}")
 
-
 # -----------------------------------------------------------------------
 # Main training loop
 # -----------------------------------------------------------------------
-from itertools import cycle
-
 def train():
     os.makedirs(CHECKPOINT_DIR, exist_ok=True)
 
@@ -237,18 +213,20 @@ def train():
 
     train_transform = get_train_transform()
     val_transform = get_val_transform()
+    strong_transform = get_strong_train_transform()   # for twin pairs
 
-    # Triplet dataset (identities with ≥2 images)
+    # Triplet dataset – twins NOT used as negatives here (empty list)
     triplet_dataset = TripletDataset(
         train_dir,
         transform=train_transform,
-        hard_twin_pairs=hard_negative_pairs
+        hard_twin_pairs=[]          # <-- twins removed from triplets
     )
     triplet_loader = DataLoader(triplet_dataset, batch_size=BATCH_SIZE, shuffle=True,
                                 num_workers=2, pin_memory=True)
 
-    # Twin pair dataset (contrastive loss)
-    twin_dataset = TwinPairDataset(train_dir, hard_negative_pairs, transform=train_transform)
+    # Twin pair dataset – STRONG augmentations
+    twin_dataset = TwinPairDataset(train_dir, hard_negative_pairs,
+                                   transform=strong_transform)
     twin_loader = DataLoader(twin_dataset, batch_size=BATCH_SIZE, shuffle=True,
                              num_workers=0, pin_memory=True) if len(twin_dataset) > 0 else None
 
@@ -260,7 +238,7 @@ def train():
 
     model = SiameseNetwork().to(DEVICE)
     criterion_triplet = TripletLoss(margin=TRIPLET_MARGIN)
-    criterion_contrastive = ContrastiveLoss(margin=2.0)
+    criterion_contrastive = ContrastiveLoss(margin=CONTRASTIVE_MARGIN)   # <-- new margin
 
     optimizer = torch.optim.Adam(model.parameters(), lr=LEARNING_RATE, weight_decay=1e-4)
     scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=NUM_EPOCHS)
@@ -271,11 +249,10 @@ def train():
 
     print(f"\n🚀 Hybrid training on {DEVICE} | epochs={NUM_EPOCHS}")
     if twin_loader:
-        print(f"   Triplet + Contrastive (twins) | margin={TRIPLET_MARGIN}")
+        print(f"   Triplet + Contrastive (twins) | margin={TRIPLET_MARGIN} / contrastive margin={CONTRASTIVE_MARGIN}")
     else:
         print(f"   Triplet only (no twin pairs found) | margin={TRIPLET_MARGIN}")
 
-    # Infinite iterator for twin loader
     twin_iter = cycle(twin_loader) if twin_loader else None
 
     for epoch in range(start_epoch, NUM_EPOCHS):
@@ -284,7 +261,7 @@ def train():
         steps = len(triplet_loader)
 
         progress_bar = tqdm(triplet_loader, desc=f"Epoch {epoch+1}/{NUM_EPOCHS}", total=steps)
-        for batch_idx, (anchor, positive, negative, anchor_labels, neg_labels) in enumerate(progress_bar):
+        for batch_idx, (anchor, positive, negative, *_) in enumerate(progress_bar):
             anchor, positive, negative = anchor.to(DEVICE), positive.to(DEVICE), negative.to(DEVICE)
 
             # Triplet loss
@@ -293,7 +270,7 @@ def train():
             emb_n = model.forward_once(negative)
             loss_triplet = criterion_triplet(emb_a, emb_p, emb_n)
 
-            # Contrastive loss on twin pairs (if available)
+            # Contrastive loss on strongly augmented twin pairs
             if twin_iter:
                 try:
                     img1, img2, label = next(twin_iter)
@@ -306,7 +283,7 @@ def train():
             else:
                 loss_contrastive = 0.0
 
-            loss = loss_triplet + 2 * loss_contrastive
+            loss = loss_triplet + 5.0 * loss_contrastive   # <-- boosted weight
 
             optimizer.zero_grad()
             loss.backward()
@@ -314,8 +291,8 @@ def train():
             optimizer.step()
             epoch_loss += loss.item()
 
-            # Update progress bar
-            progress_bar.set_postfix(loss=loss.item(), triplet=loss_triplet.item(), twin=loss_contrastive.item() if twin_iter else 0.0)
+            progress_bar.set_postfix(loss=loss.item(), triplet=loss_triplet.item(),
+                                     twin=loss_contrastive.item() if twin_iter else 0.0)
 
         avg_loss = epoch_loss / steps
         val_loss = validate(model, val_loader, DEVICE)
@@ -323,7 +300,6 @@ def train():
 
         print(f"Epoch {epoch+1:03d} | train_loss={avg_loss:.4f} | val_loss={val_loss:.4f} | lr={scheduler.get_last_lr()[0]:.2e}")
 
-        # Calibrate every 2 epochs (cosine similarity)
         if (epoch + 1) % 2 == 0:
             th_same_twin, th_twin_diff, _ = calibrate_threshold(model, val_loader, DEVICE, metric='cosine')
 
@@ -339,6 +315,6 @@ def train():
                     th_same_twin, th_twin_diff, CHECKPOINT_DIR)
     export_onnx(model, CHECKPOINT_DIR, DEVICE)
     print("\n✅ Training complete!")
-    
+
 if __name__ == "__main__":
     train()
