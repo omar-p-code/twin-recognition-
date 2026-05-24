@@ -198,24 +198,18 @@ class TripletDataset(Dataset):
 # ──────────────────────────────────────────────────────────────────────
 class TwinPairDataset(Dataset):
     def __init__(self, root_dir, twin_pairs, transform=None):
+        self.root_dir = root_dir
         self.transform = transform
-        self.samples = []
-        for a, b in twin_pairs:
-            path_a = os.path.join(root_dir, a)
-            path_b = os.path.join(root_dir, b)
-            if not os.path.isdir(path_a) or not os.path.isdir(path_b):
-                continue
-            imgs_a = [os.path.join(path_a, f) for f in os.listdir(path_a)
-                      if f.lower().endswith(('.jpg','.jpeg','.png'))]
-            imgs_b = [os.path.join(path_b, f) for f in os.listdir(path_b)
-                      if f.lower().endswith(('.jpg','.jpeg','.png'))]
-            if imgs_a and imgs_b:
-                # Randomly pick one image from each twin folder
-                self.samples.append((random.choice(imgs_a), random.choice(imgs_b)))
-        print(f"[TwinPairDataset] {len(self.samples)} twin pair samples for contrastive loss")
+
+        # store detected twin pairs
+        self.twin_pairs = twin_pairs if twin_pairs else []
+
+        print(
+            f"[TwinPairDataset] {len(self.twin_pairs)} twin pair samples for contrastive loss"
+        )
 
     def __len__(self):
-        return len(self.samples)
+        return len(self.twin_pairs)
 
     def __getitem__(self, idx):
         img_a_path, img_b_path = self.twin_pairs[idx]
@@ -227,10 +221,12 @@ class TwinPairDataset(Dataset):
             img_a = self.transform(img_a)
             img_b = self.transform(img_b)
 
-        label = torch.tensor(1.0, dtype=torch.float32)
+        label = torch.tensor(
+            1.0,
+            dtype=torch.float32
+        )
 
         return img_a, img_b, label
-
 # ──────────────────────────────────────────────────────────────────────
 # 4. auto_detect_twin_pairs (unchanged)
 # ──────────────────────────────────────────────────────────────────────
