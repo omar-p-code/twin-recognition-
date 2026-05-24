@@ -200,34 +200,39 @@ class TwinPairDataset(Dataset):
     def __init__(self, root_dir, twin_pairs, transform=None):
         self.root_dir = root_dir
         self.transform = transform
-
-        # store detected twin pairs
         self.twin_pairs = twin_pairs if twin_pairs else []
 
+        # cache image paths once
+        self.cached_pairs = []
+
+        for class_a, class_b in self.twin_pairs:
+            dir_a = os.path.join(root_dir, class_a)
+            dir_b = os.path.join(root_dir, class_b)
+
+            imgs_a = [
+                os.path.join(dir_a, f)
+                for f in os.listdir(dir_a)
+                if f.lower().endswith((".jpg", ".jpeg", ".png"))
+            ]
+
+            imgs_b = [
+                os.path.join(dir_b, f)
+                for f in os.listdir(dir_b)
+                if f.lower().endswith((".jpg", ".jpeg", ".png"))
+            ]
+
+            if imgs_a and imgs_b:
+                self.cached_pairs.append((imgs_a, imgs_b))
+
         print(
-            f"[TwinPairDataset] {len(self.twin_pairs)} twin pair samples for contrastive loss"
+            f"[TwinPairDataset] {len(self.cached_pairs)} twin pair samples for contrastive loss"
         )
 
     def __len__(self):
-        return len(self.twin_pairs)
+        return len(self.cached_pairs)
 
     def __getitem__(self, idx):
-        class_a, class_b = self.twin_pairs[idx]
-
-        dir_a = os.path.join(self.root_dir, class_a)
-        dir_b = os.path.join(self.root_dir, class_b)
-
-        imgs_a = [
-            os.path.join(dir_a, f)
-            for f in os.listdir(dir_a)
-            if f.lower().endswith((".jpg", ".jpeg", ".png"))
-        ]
-
-        imgs_b = [
-            os.path.join(dir_b, f)
-            for f in os.listdir(dir_b)
-            if f.lower().endswith((".jpg", ".jpeg", ".png"))
-        ]
+        imgs_a, imgs_b = self.cached_pairs[idx]
 
         img_a_path = random.choice(imgs_a)
         img_b_path = random.choice(imgs_b)
@@ -242,8 +247,7 @@ class TwinPairDataset(Dataset):
         label = torch.tensor(1.0, dtype=torch.float32)
 
         return img_a, img_b, label
-
-        return img_a, img_b, label
+    
 # ──────────────────────────────────────────────────────────────────────
 # 4. auto_detect_twin_pairs (unchanged)
 # ──────────────────────────────────────────────────────────────────────
