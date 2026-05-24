@@ -137,25 +137,67 @@ def validate(model, loader, device):
 # Checkpoint helpers
 # -----------------------------------------------------------------------
 def load_checkpoint(model, optimizer, checkpoint_dir, device):
-    path = os.path.join(checkpoint_dir, "checkpoint.pth")
-    if not os.path.exists(path):
-        print("No checkpoint found – starting from scratch")
-        return 0, float("inf"), 0.35, 0.60
-    ckpt = torch.load(path, map_location=device)
-    model.load_state_dict(ckpt["model_state_dict"])
-    if optimizer and "optimizer_state_dict" in ckpt:
-        try:
-            optimizer.load_state_dict(ckpt["optimizer_state_dict"])
-        except Exception:
-            print("Warning: could not restore optimizer state")
-    start_epoch = ckpt.get("epoch", -1) + 1
-    best_loss = ckpt.get("best_loss", float("inf"))
-    th_same = ckpt.get("threshold_same_twin", 0.35)
-    th_twin = ckpt.get("threshold_twin_diff", 0.60)
-    print(f"Resumed from epoch {start_epoch} | best_loss={best_loss:.4f}")
-    print(f"  thresholds: same_twin={th_same:.4f}, twin_diff={th_twin:.4f}")
-    return start_epoch, best_loss, th_same, th_twin
+    checkpoint_path = os.path.join(
+        checkpoint_dir,
+        "best_model.pth"
+    )
 
+    if not os.path.exists(checkpoint_path):
+        print("No checkpoint found. Starting fresh.")
+        return 0, float("inf"), None, None
+
+    print(f"Loading checkpoint: {checkpoint_path}")
+
+    ckpt = torch.load(
+        checkpoint_path,
+        map_location=device
+    )
+
+    try:
+        model.load_state_dict(
+            ckpt["model_state_dict"],
+            strict=False
+        )
+
+        if "optimizer_state_dict" in ckpt:
+            optimizer.load_state_dict(
+                ckpt["optimizer_state_dict"]
+            )
+
+        start_epoch = ckpt.get("epoch", 0) + 1
+        best_loss = ckpt.get("best_loss", float("inf"))
+
+        th_same_twin = ckpt.get(
+            "th_same_twin",
+            None
+        )
+
+        th_twin_diff = ckpt.get(
+            "th_twin_diff",
+            None
+        )
+
+        print(
+            f"✓ Resumed from epoch {start_epoch}"
+        )
+
+        return (
+            start_epoch,
+            best_loss,
+            th_same_twin,
+            th_twin_diff
+        )
+
+    except RuntimeError:
+        print(
+            "Checkpoint architecture mismatch detected."
+        )
+        print(
+            "Starting fresh with new model weights."
+        )
+
+        return 0, float("inf"), None, None
+    
 def save_checkpoint(model, optimizer, epoch, loss, best_loss, th_same, th_twin, checkpoint_dir):
     ckpt = {
         "epoch": epoch,
