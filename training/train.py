@@ -306,7 +306,7 @@ def train():
             else:
                 loss_contrastive = 0.0
 
-            loss = loss_triplet + 0.5 * loss_contrastive
+            loss = loss_triplet + 2 * loss_contrastive
 
             optimizer.zero_grad()
             loss.backward()
