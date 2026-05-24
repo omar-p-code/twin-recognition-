@@ -139,7 +139,7 @@ def validate(model, loader, device):
 def load_checkpoint(model, optimizer, checkpoint_dir, device):
     checkpoint_path = os.path.join(
         checkpoint_dir,
-        "best_model.pth"
+        "checkpoint.pth"
     )
 
     if not os.path.exists(checkpoint_path):
