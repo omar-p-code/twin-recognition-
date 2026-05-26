@@ -4,5 +4,6 @@ __pycashe__/
 venv/
 .buildozer/
 *.pth
+checkpoint.pth
 *.onnx
 checkpoints/

@@ -22,7 +22,7 @@ from models.siamese import SiameseNetwork
 # ---------------------------------------------------
 # Checkpoint path
 # ---------------------------------------------------
-CHECKPOINT_PATH = ROOT_DIR / "checkpoints" / "checkpoint.pth"
+CHECKPOINT_PATH = ROOT_DIR / "checkpoints" / "checkpoint_clean.pth"
 
 print(f"\nLoading checkpoint from: {CHECKPOINT_PATH}")
 
