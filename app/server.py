@@ -34,9 +34,13 @@ if not CHECKPOINT_PATH.exists():
 # ---------------------------------------------------
 # Load checkpoint
 # ---------------------------------------------------
+# import numpy
+# torch.serialization.add_safe_globals([numpy.core.multiarray.scalar])
+
 checkpoint = torch.load(
     CHECKPOINT_PATH,
-    map_location=torch.device("cpu")
+    map_location=torch.device("cpu"),
+    weights_only=False
 )
 
 # ---------------------------------------------------
